@@ -8,15 +8,17 @@ main.py
  - HTML визуал: колонки по спринтам -> ДИТ / Invaders, подсветка карточек
  - фильтр по задаче
  - фильтр по спринту
+ - выгрузку в Excel
 Запуск: нажать Run в IDE (PyCharm/VSCode и т.д.)
-Зависимости: pandas
-    pip install pandas
+Зависимости: pandas, openpyxl
+    pip install pandas openpyxl
 """
 
 import re
 import html
 from pathlib import Path
 import pandas as pd
+from datetime import datetime
 
 # -------------------------
 # Настройки
@@ -24,6 +26,7 @@ import pandas as pd
 MOS_NAME = "Mos.csv"
 INV_NAME = "Invaders.csv"
 OUT_NAME = "report.html"
+EXCEL_NAME = "comparison_report.xlsx"
 
 # Базовые URL для задач
 MOS_BASE_URL = "https://itpm.mos.ru/browse/"
@@ -315,9 +318,273 @@ def categorize_and_prepare(mos_df, inv_df, matches, mos_used, inv_used):
     return categorized
 
 # -------------------------
+# Экспорт в Excel
+# -------------------------
+def export_to_excel(categorized, out_file: Path, mos_df, inv_df):
+    """
+    Создает Excel файл с несколькими листами:
+    1. Сводка (статистика)
+    2. Совпадения
+    3. Разные спринты
+    4. Только ДИТ
+    5. Только Invaders
+    6. Исходные данные ДИТ
+    7. Исходные данные Invaders
+    """
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+    
+    print(f"Создание Excel файла: {out_file}")
+    
+    # Создаем новую книгу
+    wb = Workbook()
+    
+    # Удаляем дефолтный лист
+    if 'Sheet' in wb.sheetnames:
+        ws = wb['Sheet']
+        wb.remove(ws)
+    
+    # Настройки стилей
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill(start_color="0F1724", end_color="0F1724", fill_type="solid")
+    center_alignment = Alignment(horizontal="center", vertical="center")
+    border_style = Border(
+        left=Side(style='thin'),
+        right=Side(style='thin'),
+        top=Side(style='thin'),
+        bottom=Side(style='thin')
+    )
+    
+    # Лист 1: Сводка
+    ws_summary = wb.create_sheet("Сводка")
+    
+    # Заголовок
+    ws_summary.merge_cells('A1:D1')
+    ws_summary['A1'] = "Сводный отчет по сопоставлению задач ДИТ и Invaders"
+    ws_summary['A1'].font = Font(bold=True, size=14)
+    ws_summary['A1'].alignment = center_alignment
+    
+    ws_summary['A3'] = "Дата создания отчета:"
+    ws_summary['B3'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    # Статистика
+    ws_summary['A5'] = "Статистика"
+    ws_summary['A5'].font = Font(bold=True, size=12)
+    
+    stats_data = [
+        ["Показатель", "Количество"],
+        ["Всего задач ДИТ", len(categorized['match']) + len(categorized['diff_sprint']) + len(categorized['mos_only'])],
+        ["Всего задач Invaders", len(categorized['match']) + len(categorized['diff_sprint']) + len(categorized['inv_only'])],
+        ["Совпадения (одинаковые спринты)", len(categorized['match'])],
+        ["Совпадения (разные спринты)", len(categorized['diff_sprint'])],
+        ["Только в ДИТ", len(categorized['mos_only'])],
+        ["Только в Invaders", len(categorized['inv_only'])],
+        ["Всего совпадений", len(categorized['match']) + len(categorized['diff_sprint'])],
+        ["Процент совпадений", f"{(len(categorized['match']) + len(categorized['diff_sprint'])) / max(len(categorized['match']) + len(categorized['diff_sprint']) + len(categorized['mos_only']), 1) * 100:.1f}%"]
+    ]
+    
+    for i, row in enumerate(stats_data):
+        for j, value in enumerate(row):
+            cell = ws_summary.cell(row=i+6, column=j+1)
+            cell.value = value
+            cell.border = border_style
+            if i == 0:  # Заголовок таблицы
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = center_alignment
+    
+    # Лист 2: Совпадения
+    ws_matches = wb.create_sheet("Совпадения")
+    matches_headers = ["Спринт", "Ключ ДИТ", "Название ДИТ", "Ссылка ДИТ", 
+                      "Ключ Invaders", "Название Invaders", "Ссылка Invaders", "Статус"]
+    
+    for col, header in enumerate(matches_headers, 1):
+        cell = ws_matches.cell(row=1, column=col)
+        cell.value = header
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = center_alignment
+        cell.border = border_style
+    
+    row = 2
+    for item in categorized['match']:
+        ws_matches.cell(row=row, column=1, value=item['mos_sprint']).border = border_style
+        ws_matches.cell(row=row, column=2, value=item['mos_id']).border = border_style
+        ws_matches.cell(row=row, column=3, value=item['mos_title']).border = border_style
+        ws_matches.cell(row=row, column=4, value=item['mos_url']).border = border_style
+        ws_matches.cell(row=row, column=5, value=item['inv_id']).border = border_style
+        ws_matches.cell(row=row, column=6, value=item['inv_title']).border = border_style
+        ws_matches.cell(row=row, column=7, value=item['inv_url']).border = border_style
+        ws_matches.cell(row=row, column=8, value="Совпадение").border = border_style
+        row += 1
+    
+    # Лист 3: Разные спринты
+    ws_diff = wb.create_sheet("Разные спринты")
+    diff_headers = ["Спринт ДИТ", "Спринт Invaders", "Ключ ДИТ", "Название ДИТ", 
+                   "Ссылка ДИТ", "Ключ Invaders", "Название Invaders", "Ссылка Invaders", "Статус"]
+    
+    for col, header in enumerate(diff_headers, 1):
+        cell = ws_diff.cell(row=1, column=col)
+        cell.value = header
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = center_alignment
+        cell.border = border_style
+    
+    row = 2
+    for item in categorized['diff_sprint']:
+        ws_diff.cell(row=row, column=1, value=item['mos_sprint']).border = border_style
+        ws_diff.cell(row=row, column=2, value=item['inv_sprint']).border = border_style
+        ws_diff.cell(row=row, column=3, value=item['mos_id']).border = border_style
+        ws_diff.cell(row=row, column=4, value=item['mos_title']).border = border_style
+        ws_diff.cell(row=row, column=5, value=item['mos_url']).border = border_style
+        ws_diff.cell(row=row, column=6, value=item['inv_id']).border = border_style
+        ws_diff.cell(row=row, column=7, value=item['inv_title']).border = border_style
+        ws_diff.cell(row=row, column=8, value=item['inv_url']).border = border_style
+        ws_diff.cell(row=row, column=9, value="Разные спринты").border = border_style
+        row += 1
+    
+    # Лист 4: Только ДИТ
+    ws_mos_only = wb.create_sheet("Только ДИТ")
+    mos_only_headers = ["Спринт", "Ключ ДИТ", "Название ДИТ", "Ссылка ДИТ"]
+    
+    for col, header in enumerate(mos_only_headers, 1):
+        cell = ws_mos_only.cell(row=1, column=col)
+        cell.value = header
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = center_alignment
+        cell.border = border_style
+    
+    row = 2
+    for item in categorized['mos_only']:
+        ws_mos_only.cell(row=row, column=1, value=item['mos_sprint']).border = border_style
+        ws_mos_only.cell(row=row, column=2, value=item['mos_id']).border = border_style
+        ws_mos_only.cell(row=row, column=3, value=item['mos_title']).border = border_style
+        ws_mos_only.cell(row=row, column=4, value=item['mos_url']).border = border_style
+        row += 1
+    
+    # Лист 5: Только Invaders
+    ws_inv_only = wb.create_sheet("Только Invaders")
+    inv_only_headers = ["Спринт", "Ключ Invaders", "Название Invaders", "Ссылка Invaders"]
+    
+    for col, header in enumerate(inv_only_headers, 1):
+        cell = ws_inv_only.cell(row=1, column=col)
+        cell.value = header
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = center_alignment
+        cell.border = border_style
+    
+    row = 2
+    for item in categorized['inv_only']:
+        ws_inv_only.cell(row=row, column=1, value=item['inv_sprint']).border = border_style
+        ws_inv_only.cell(row=row, column=2, value=item['inv_id']).border = border_style
+        ws_inv_only.cell(row=row, column=3, value=item['inv_title']).border = border_style
+        ws_inv_only.cell(row=row, column=4, value=item['inv_url']).border = border_style
+        row += 1
+    
+    # Лист 6: Исходные данные ДИТ (ограничим количество колонок)
+    ws_mos_raw = wb.create_sheet("Исходные данные ДИТ")
+    
+    # Выбираем только строковые колонки для избежания ошибок сортировки
+    mos_columns = []
+    for col in mos_df.columns:
+        # Проверяем, что колонка содержит строковые данные
+        try:
+            # Пробуем взять первую непустую ячейку
+            sample_value = mos_df[col].dropna().iloc[0] if not mos_df[col].dropna().empty else ""
+            # Если это строка или число, добавляем колонку
+            if isinstance(sample_value, (str, int, float)):
+                mos_columns.append(col)
+        except:
+            continue
+    
+    # Если не нашли подходящих колонок, берем первые 8
+    if len(mos_columns) == 0:
+        mos_columns = list(mos_df.columns)[:8]
+    
+    # Ограничиваем количество колонок
+    mos_columns = mos_columns[:8]
+    
+    for col_idx, header in enumerate(mos_columns, 1):
+        cell = ws_mos_raw.cell(row=1, column=col_idx)
+        cell.value = str(header)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = center_alignment
+        cell.border = border_style
+    
+    for i, row_data in mos_df.iterrows():
+        for j, col_name in enumerate(mos_columns, 1):
+            cell = ws_mos_raw.cell(row=i+2, column=j)
+            value = row_data[col_name] if col_name in row_data and not pd.isna(row_data[col_name]) else ""
+            cell.value = str(value) if not isinstance(value, (int, float)) else value
+            cell.border = border_style
+    
+    # Лист 7: Исходные данные Invaders (ограничим количество колонок)
+    ws_inv_raw = wb.create_sheet("Исходные данные Invaders")
+    
+    # Выбираем только строковые колонки для избежания ошибок сортировки
+    inv_columns = []
+    for col in inv_df.columns:
+        # Проверяем, что колонка содержит строковые данные
+        try:
+            # Пробуем взять первую непустую ячейку
+            sample_value = inv_df[col].dropna().iloc[0] if not inv_df[col].dropna().empty else ""
+            # Если это строка или число, добавляем колонку
+            if isinstance(sample_value, (str, int, float)):
+                inv_columns.append(col)
+        except:
+            continue
+    
+    # Если не нашли подходящих колонок, берем первые 8
+    if len(inv_columns) == 0:
+        inv_columns = list(inv_df.columns)[:8]
+    
+    # Ограничиваем количество колонок
+    inv_columns = inv_columns[:8]
+    
+    for col_idx, header in enumerate(inv_columns, 1):
+        cell = ws_inv_raw.cell(row=1, column=col_idx)
+        cell.value = str(header)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = center_alignment
+        cell.border = border_style
+    
+    for i, row_data in inv_df.iterrows():
+        for j, col_name in enumerate(inv_columns, 1):
+            cell = ws_inv_raw.cell(row=i+2, column=j)
+            value = row_data[col_name] if col_name in row_data and not pd.isna(row_data[col_name]) else ""
+            cell.value = str(value) if not isinstance(value, (int, float)) else value
+            cell.border = border_style
+    
+    # Настройка ширины колонок (без сортировки)
+    for ws in wb.worksheets:
+        for column in ws.columns:
+            max_length = 0
+            column_letter = get_column_letter(column[0].column)
+            for cell in column:
+                try:
+                    if cell.value:
+                        cell_length = len(str(cell.value))
+                        if cell_length > max_length:
+                            max_length = cell_length
+                except:
+                    pass
+            adjusted_width = min(max_length + 2, 50)
+            ws.column_dimensions[column_letter].width = adjusted_width
+    
+    # Сохраняем файл
+    wb.save(out_file)
+    print(f"Excel файл успешно создан: {out_file}")
+
+# -------------------------
 # HTML генерация (визуал как у примера)
 # -------------------------
-def generate_html(categorized, out_file: Path):
+def generate_html(categorized, out_file: Path, mos_df, inv_df):
     # собрать все спринты и отсортировать по номеру
     sprint_set = set()
     for cat in categorized.values():
@@ -357,6 +624,8 @@ def generate_html(categorized, out_file: Path):
     .inv-only{background:#e8f1ff;border-left:4px solid #1e6fe0}
     .controls{margin-bottom:12px}
     .btn{display:inline-block;padding:6px 10px;border-radius:6px;background:#0f1724;color:#fff;text-decoration:none;margin-right:8px;font-size:13px;cursor:pointer}
+    .export-btn{display:inline-block;padding:6px 10px;border-radius:6px;background:#2f9e44;color:#fff;text-decoration:none;margin-right:8px;font-size:13px;cursor:pointer}
+    .export-btn:hover{background:#2b8c3f}
     .small{font-size:12px;color:#6b7280;margin-left:10px}
     .filter-container{margin-top:8px;display:flex;align-items:center;gap:8px}
     .filter-input{padding:6px 10px;border:1px solid #e6e9ef;border-radius:6px;font-size:13px;flex:1;max-width:300px}
@@ -370,6 +639,8 @@ def generate_html(categorized, out_file: Path):
     .task-hidden{display:none}
     .sprint-hidden{display:none}
     .table-container{overflow-x:auto;margin-top:16px}
+    .export-section{margin-top:16px;padding:12px;background:#f8fafc;border-radius:6px;border:1px solid #e6e9ef}
+    .export-info{font-size:13px;color:#4b5563;margin-top:8px}
     </style>
     """
 
@@ -620,6 +891,10 @@ def generate_html(categorized, out_file: Path):
     html_parts.append("<button class='btn' onclick=\"toggleClass('diff')\">Toggle разные спринты</button>")
     html_parts.append("<button class='btn' onclick=\"toggleClass('mos-only')\">Toggle только ДИТ</button>")
     html_parts.append("<button class='btn' onclick=\"toggleClass('inv-only')\">Toggle только Invaders</button>")
+    
+    # Кнопка экспорта в Excel
+    html_parts.append("<button class='export-btn' onclick=\"window.location.href='comparison_report.xlsx'\">Скачать Excel отчет</button>")
+    
     html_parts.append("<span class='small'>Фильтры работают визуально</span>")
     html_parts.append("</div>")
     
@@ -642,6 +917,17 @@ def generate_html(categorized, out_file: Path):
     html_parts.append("<button class='filter-btn' onclick='filterBySprint()'>Применить</button>")
     html_parts.append("<button class='filter-clear' onclick='clearSprintFilter()'>Очистить</button>")
     html_parts.append("<button class='filter-clear' onclick='clearAllFilters()'>Очистить все фильтры</button>")
+    html_parts.append("</div>")
+    
+    # Секция информации об экспорте
+    html_parts.append("<div class='export-section'>")
+    html_parts.append("<strong>Доступен экспорт в Excel:</strong>")
+    html_parts.append("<div class='export-info'>")
+    html_parts.append(f"• Отчет содержит {len(categorized['match'])} совпадений, {len(categorized['diff_sprint'])} задач с разными спринтами<br>")
+    html_parts.append(f"• Только в ДИТ: {len(categorized['mos_only'])} задач<br>")
+    html_parts.append(f"• Только в Invaders: {len(categorized['inv_only'])} задач<br>")
+    html_parts.append("• Нажмите кнопку 'Скачать Excel отчет' для выгрузки полных данных")
+    html_parts.append("</div>")
     html_parts.append("</div>")
     
     html_parts.append("<div class='legend'><b>Легенда:</b> <span style='background:#e6f6ea;padding:4px 8px;border-radius:4px;margin-left:8px'>совпадение (зелёный)</span> <span style='background:#fff8e0;padding:4px 8px;border-radius:4px;margin-left:8px'>разные спринты (жёлтый)</span> <span style='background:#ffe9e9;padding:4px 8px;border-radius:4px;margin-left:8px'>только ДИТ (красный)</span> <span style='background:#e8f1ff;padding:4px 8px;border-radius:4px;margin-left:8px'>только Invaders (синий)</span></div>")
@@ -727,7 +1013,7 @@ def generate_html(categorized, out_file: Path):
 
     out_html = "".join(html_parts)
     out_file.write_text(out_html, encoding="utf-8")
-    print("Saved:", str(out_file))
+    print("Saved HTML:", str(out_file))
 
 # -------------------------
 # Main
@@ -737,6 +1023,7 @@ def main():
     mos_path = base / MOS_NAME
     inv_path = base / INV_NAME
     out_path = base / OUT_NAME
+    excel_path = base / EXCEL_NAME
 
     if not mos_path.exists():
         print("Файл Mos.csv не найден в папке со скриптом:", mos_path)
@@ -784,7 +1071,18 @@ def main():
     categorized = categorize_and_prepare(mos_df, inv_df, matches, mos_used, inv_used)
 
     # генерируем HTML
-    generate_html(categorized, out_path)
+    generate_html(categorized, out_path, mos_df, inv_df)
+    
+    # экспортируем в Excel
+    try:
+        export_to_excel(categorized, excel_path, mos_df, inv_df)
+    except ImportError:
+        print("Для экспорта в Excel требуется библиотека openpyxl.")
+        print("Установите её командой: pip install openpyxl")
+    except Exception as e:
+        print(f"Ошибка при создании Excel файла: {e}")
+        import traceback
+        traceback.print_exc()
 
 if __name__ == "__main__":
     main()
