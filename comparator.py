@@ -7,6 +7,7 @@ main.py
  - двустороннее сопоставление (META-XXX в title и наоборот)
  - HTML визуал: колонки по спринтам -> ДИТ / Invaders, подсветка карточек
  - фильтр по задаче
+ - фильтр по спринту
 Запуск: нажать Run в IDE (PyCharm/VSCode и т.д.)
 Зависимости: pandas
     pip install pandas
@@ -359,27 +360,57 @@ def generate_html(categorized, out_file: Path):
     .small{font-size:12px;color:#6b7280;margin-left:10px}
     .filter-container{margin-top:8px;display:flex;align-items:center;gap:8px}
     .filter-input{padding:6px 10px;border:1px solid #e6e9ef;border-radius:6px;font-size:13px;flex:1;max-width:300px}
+    .filter-select{padding:6px 10px;border:1px solid #e6e9ef;border-radius:6px;font-size:13px;max-width:200px}
     .filter-btn{padding:6px 10px;border-radius:6px;background:#0f1724;color:#fff;border:none;cursor:pointer;font-size:13px}
     .filter-btn:hover{background:#1a2638}
     .filter-clear{padding:6px 10px;border-radius:6px;background:#e6e9ef;color:#0f1724;border:none;cursor:pointer;font-size:13px}
     .filter-clear:hover{background:#d1d5db}
+    .filter-row{margin-top:8px;display:flex;align-items:center;gap:8px}
+    .filter-label{font-size:13px;color:#0f1724;margin-right:4px}
     .task-hidden{display:none}
+    .sprint-hidden{display:none}
+    .table-container{overflow-x:auto;margin-top:16px}
     </style>
     """
 
     js = """
     <script>
+    let originalTableHTML = '';
+    let allSprints = [];
+    let currentFilteredSprint = '';
+    
+    document.addEventListener('DOMContentLoaded', function() {
+        // Сохраняем оригинальную таблицу и список спринтов
+        originalTableHTML = document.querySelector('table').outerHTML;
+        const sprintSelect = document.getElementById('sprintFilter');
+        allSprints = Array.from(sprintSelect.options).map(opt => opt.value).filter(val => val);
+    });
+    
     function toggleClass(cls){
         const els = document.querySelectorAll('.' + cls);
         els.forEach(e => {
             e.style.display = (e.style.display === 'none')? '' : 'none';
         });
     }
+    
     function showAll(){
+        // Восстанавливаем оригинальную таблицу
+        const tableContainer = document.querySelector('.table-container');
+        tableContainer.innerHTML = originalTableHTML;
+        currentFilteredSprint = '';
+        
+        // Сбрасываем выпадающий список
+        const sprintSelect = document.getElementById('sprintFilter');
+        if (sprintSelect) {
+            sprintSelect.value = '';
+        }
+        
+        // Показываем все задачи
         ['match','diff','mos-only','inv-only'].forEach(c => {
             document.querySelectorAll('.' + c).forEach(e => e.style.display = '');
         });
     }
+    
     function hideAll(){
         ['match','diff','mos-only','inv-only'].forEach(c => {
             document.querySelectorAll('.' + c).forEach(e => e.style.display = 'none');
@@ -417,11 +448,155 @@ def generate_html(categorized, out_file: Path):
         });
     }
     
-    // Очистка фильтра
+    // Функция фильтрации по спринту
+    function filterBySprint() {
+        const sprintSelect = document.getElementById('sprintFilter');
+        const selectedSprint = sprintSelect.value;
+        
+        if (!selectedSprint || selectedSprint === currentFilteredSprint) {
+            return;
+        }
+        
+        currentFilteredSprint = selectedSprint;
+        
+        // Восстанавливаем оригинальную таблицу
+        const tableContainer = document.querySelector('.table-container');
+        const table = document.querySelector('table');
+        
+        if (!table) {
+            console.error('Table not found');
+            return;
+        }
+        
+        // Создаем новую таблицу только с выбранным спринтом
+        const newTable = document.createElement('table');
+        
+        // Создаем заголовки для выбранного спринта
+        const thead = document.createElement('thead');
+        
+        // Первая строка заголовков
+        const headerRow1 = document.createElement('tr');
+        const headerCell1 = document.createElement('th');
+        headerCell1.colSpan = 2;
+        headerCell1.textContent = selectedSprint;
+        headerRow1.appendChild(headerCell1);
+        thead.appendChild(headerRow1);
+        
+        // Вторая строка заголовков
+        const headerRow2 = document.createElement('tr');
+        const headerCellDit = document.createElement('th');
+        headerCellDit.className = 'col-head';
+        headerCellDit.textContent = 'ДИТ';
+        headerRow2.appendChild(headerCellDit);
+        
+        const headerCellInv = document.createElement('th');
+        headerCellInv.className = 'col-head';
+        headerCellInv.textContent = 'Invaders';
+        headerRow2.appendChild(headerCellInv);
+        thead.appendChild(headerRow2);
+        
+        newTable.appendChild(thead);
+        
+        // Создаем тело таблицы
+        const tbody = document.createElement('tbody');
+        const bodyRow = document.createElement('tr');
+        
+        // Колонка ДИТ
+        const ditCell = document.createElement('td');
+        
+        // Находим индекс спринта в оригинальной таблице
+        const originalTable = document.createElement('div');
+        originalTable.innerHTML = originalTableHTML;
+        const originalSprintHeaders = originalTable.querySelectorAll('th[colspan="2"]');
+        let sprintIndex = -1;
+        
+        for (let i = 0; i < originalSprintHeaders.length; i++) {
+            if (originalSprintHeaders[i].textContent.trim() === selectedSprint) {
+                sprintIndex = i;
+                break;
+            }
+        }
+        
+        if (sprintIndex !== -1) {
+            // Получаем все задачи из оригинальной таблицы для этого спринта
+            const originalTds = originalTable.querySelectorAll('td');
+            const ditCellIndex = sprintIndex * 2;
+            
+            if (ditCellIndex < originalTds.length) {
+                // Копируем содержимое колонки ДИТ
+                ditCell.innerHTML = originalTds[ditCellIndex].innerHTML;
+            }
+        }
+        
+        bodyRow.appendChild(ditCell);
+        
+        // Колонка Invaders
+        const invCell = document.createElement('td');
+        
+        if (sprintIndex !== -1) {
+            const originalTds = originalTable.querySelectorAll('td');
+            const invCellIndex = sprintIndex * 2 + 1;
+            
+            if (invCellIndex < originalTds.length) {
+                // Копируем содержимое колонки Invaders
+                invCell.innerHTML = originalTds[invCellIndex].innerHTML;
+            }
+        }
+        
+        bodyRow.appendChild(invCell);
+        tbody.appendChild(bodyRow);
+        newTable.appendChild(tbody);
+        
+        // Заменяем таблицу
+        tableContainer.innerHTML = '';
+        tableContainer.appendChild(newTable);
+        
+        // Применяем текущий фильтр по задаче, если он есть
+        const filterInput = document.getElementById('taskFilter');
+        if (filterInput && filterInput.value.trim()) {
+            filterByTask();
+        }
+    }
+    
+    // Очистка фильтра по спринту
+    function clearSprintFilter() {
+        const sprintSelect = document.getElementById('sprintFilter');
+        sprintSelect.value = '';
+        currentFilteredSprint = '';
+        
+        // Восстанавливаем оригинальную таблицу
+        const tableContainer = document.querySelector('.table-container');
+        tableContainer.innerHTML = originalTableHTML;
+        
+        // Применяем текущий фильтр по задаче, если он есть
+        const filterInput = document.getElementById('taskFilter');
+        if (filterInput && filterInput.value.trim()) {
+            filterByTask();
+        }
+    }
+    
+    // Очистка фильтра по задаче
     function clearFilter() {
         const filterInput = document.getElementById('taskFilter');
         filterInput.value = '';
-        filterByTask();
+        
+        if (currentFilteredSprint) {
+            // Если есть фильтр по спринту, пересоздаем таблицу
+            const sprintSelect = document.getElementById('sprintFilter');
+            sprintSelect.value = currentFilteredSprint;
+            filterBySprint();
+        } else {
+            // Иначе показываем все задачи
+            document.querySelectorAll('.task').forEach(task => {
+                task.classList.remove('task-hidden');
+            });
+        }
+    }
+    
+    // Очистка всех фильтров
+    function clearAllFilters() {
+        clearFilter();
+        clearSprintFilter();
     }
     
     // Обработка нажатия Enter в поле фильтра
@@ -433,7 +608,7 @@ def generate_html(categorized, out_file: Path):
     </script>
     """
 
-    # Собираем таблицу
+    # Собираем HTML
     html_parts = []
     html_parts.append("<!doctype html><html><head><meta charset='utf-8'><title>Сравнение ДИТ ↔ Invaders</title>")
     html_parts.append(css)
@@ -449,15 +624,32 @@ def generate_html(categorized, out_file: Path):
     html_parts.append("</div>")
     
     # Добавляем фильтр по задаче
-    html_parts.append("<div class='filter-container'>")
+    html_parts.append("<div class='filter-row'>")
+    html_parts.append("<div class='filter-label'>Фильтр по задаче:</div>")
     html_parts.append("<input type='text' id='taskFilter' class='filter-input' placeholder='Введите номер или название задачи (META-123, MT-456, или текст)' onkeypress='handleFilterKeyPress(event)'>")
     html_parts.append("<button class='filter-btn' onclick='filterByTask()'>Фильтровать</button>")
     html_parts.append("<button class='filter-clear' onclick='clearFilter()'>Очистить</button>")
     html_parts.append("</div>")
     
+    # Добавляем фильтр по спринту
+    html_parts.append("<div class='filter-row'>")
+    html_parts.append("<div class='filter-label'>Фильтр по спринту:</div>")
+    html_parts.append("<select id='sprintFilter' class='filter-select'>")
+    html_parts.append("<option value=''>Все спринты</option>")
+    for sp in sorted_sprints:
+        html_parts.append(f"<option value='{html.escape(sp)}'>{html.escape(sp)}</option>")
+    html_parts.append("</select>")
+    html_parts.append("<button class='filter-btn' onclick='filterBySprint()'>Применить</button>")
+    html_parts.append("<button class='filter-clear' onclick='clearSprintFilter()'>Очистить</button>")
+    html_parts.append("<button class='filter-clear' onclick='clearAllFilters()'>Очистить все фильтры</button>")
+    html_parts.append("</div>")
+    
     html_parts.append("<div class='legend'><b>Легенда:</b> <span style='background:#e6f6ea;padding:4px 8px;border-radius:4px;margin-left:8px'>совпадение (зелёный)</span> <span style='background:#fff8e0;padding:4px 8px;border-radius:4px;margin-left:8px'>разные спринты (жёлтый)</span> <span style='background:#ffe9e9;padding:4px 8px;border-radius:4px;margin-left:8px'>только ДИТ (красный)</span> <span style='background:#e8f1ff;padding:4px 8px;border-radius:4px;margin-left:8px'>только Invaders (синий)</span></div>")
 
-    # Header: one TH pair per sprint
+    # Контейнер для таблицы
+    html_parts.append("<div class='table-container'>")
+    
+    # Создаем оригинальную таблицу
     html_parts.append("<table><thead><tr>")
     for sp in sorted_sprints:
         html_parts.append(f"<th colspan='2'>{html.escape(sp)}</th>")
@@ -528,6 +720,8 @@ def generate_html(categorized, out_file: Path):
         html_parts.append("</td>")
 
     html_parts.append("</tr></tbody></table>")
+    html_parts.append("</div>")  # Закрываем table-container
+    
     html_parts.append(js)
     html_parts.append("</div></body></html>")
 
