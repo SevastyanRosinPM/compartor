@@ -10,6 +10,7 @@ main.py
  - фильтр по спринту
  - выгрузку в Excel
  - разделение на свимлайны "Задачи" и "Баги"
+ - вывод статусов задач
 Запуск: нажать Run в IDE (PyCharm/VSCode и т.д.)
 Зависимости: pandas, openpyxl
     pip install pandas openpyxl
@@ -148,6 +149,49 @@ def normalize_inv_key(key_str: str):
     
     return None
 
+def find_status_column(df, system_name):
+    """Найти колонку со статусом в DataFrame"""
+    status_columns = []
+    
+    # Возможные названия колонок со статусом
+    possible_names = [
+        'Статус', 'Status', 'Состояние', 'State',
+        'Статус задачи', 'Status of the task',
+        'Статус проблемы', 'Issue Status'
+    ]
+    
+    for col in df.columns:
+        col_str = str(col).strip()
+        
+        # Проверяем точное совпадение
+        if col_str in possible_names:
+            return col
+        
+        # Проверяем частичное совпадение
+        col_lower = col_str.lower()
+        if any(name.lower() in col_lower for name in ['статус', 'status', 'состояние', 'state']):
+            status_columns.append(col)
+    
+    # Если нашли несколько подходящих, выбираем первую
+    if status_columns:
+        return status_columns[0]
+    
+    # Если не нашли, проверяем содержимое колонок
+    for col in df.columns:
+        # Берем первые несколько непустых значений
+        sample_values = df[col].dropna().head(5)
+        if len(sample_values) > 0:
+            # Проверяем, содержат ли значения типичные статусы
+            status_keywords = ['открыт', 'в работе', 'готово', 'закрыт', 'отложен',
+                              'open', 'in progress', 'done', 'closed', 'resolved']
+            for val in sample_values:
+                val_str = str(val).lower()
+                if any(keyword in val_str for keyword in status_keywords):
+                    return col
+    
+    print(f"  ⚠️ Для {system_name} не найдена колонка со статусом. Доступные колонки: {list(df.columns)[:10]}...")
+    return None
+
 # -------------------------
 # Сопоставление
 # -------------------------
@@ -230,20 +274,31 @@ def match_two_way(mos_df, inv_df):
 
     return matches, mos_used, inv_used
 
-# -------------------------
-# Категории и сбор данных
-# -------------------------
 def categorize_and_prepare(mos_df, inv_df, matches, mos_used, inv_used):
     """
     Возвращает структуру categorized:
       {
-        'match': [ {mos_id, inv_id, mos_title, inv_title, mos_sprint, inv_sprint, mos_url, inv_url, is_bug}, ... ],
+        'match': [ {mos_id, inv_id, mos_title, inv_title, mos_sprint, inv_sprint, mos_url, inv_url, is_bug, mos_status, inv_status}, ... ],
         'diff_sprint': [...],
         'mos_only': [...],
         'inv_only': [...]
       }
     """
     categorized = {'match': [], 'diff_sprint': [], 'mos_only': [], 'inv_only': []}
+
+    # Находим колонки со статусами
+    mos_status_col = find_status_column(mos_df, "ДИТ")
+    inv_status_col = find_status_column(inv_df, "Invaders")
+    
+    if mos_status_col:
+        print(f"  ✓ Найдена колонка статуса для ДИТ: '{mos_status_col}'")
+    else:
+        print(f"  ✗ Колонка статуса для ДИТ не найдена")
+    
+    if inv_status_col:
+        print(f"  ✓ Найдена колонка статуса для Invaders: '{inv_status_col}'")
+    else:
+        print(f"  ✗ Колонка статуса для Invaders не найдена")
 
     for mi, ji in matches:
         m = mos_df.loc[mi]
@@ -264,28 +319,40 @@ def categorize_and_prepare(mos_df, inv_df, matches, mos_used, inv_used):
         mos_url = get_task_url(mos_id, 'mos')
         inv_url = get_task_url(inv_id, 'inv')
         
+        # Получаем статусы задач
+        mos_status = m.get(mos_status_col) if mos_status_col else None
+        inv_status = j.get(inv_status_col) if inv_status_col else None
+        
+        # Очищаем статусы от NaN
+        if mos_status and isinstance(mos_status, float) and pd.isna(mos_status):
+            mos_status = None
+        if inv_status and isinstance(inv_status, float) and pd.isna(inv_status):
+            inv_status = None
+        
+        # Получаем названия задач
+        mos_title = m.get('Тема') or ""
+        inv_title = j.get('Тема') or j.get('title') or ""
+        
         # Определяем, является ли задача багом
         # Проверяем в названии Invaders наличие [Баг]
-        inv_title = j.get('Тема') or j.get('title') or ""
         is_bug = False
         if isinstance(inv_title, str) and '[Баг]' in inv_title:
             is_bug = True
-        else:
-            # Также проверяем в названии ДИТ
-            mos_title = m.get('Тема') or ""
-            if isinstance(mos_title, str) and '[Баг]' in mos_title:
-                is_bug = True
+        elif isinstance(mos_title, str) and '[Баг]' in mos_title:
+            is_bug = True
         
         rec = {
             'mos_id': mos_id,
             'inv_id': inv_id,
-            'mos_title': m.get('Тема'),
+            'mos_title': mos_title,
             'inv_title': inv_title,
             'mos_sprint': ms,
             'inv_sprint': js,
             'mos_url': mos_url,
             'inv_url': inv_url,
-            'is_bug': is_bug
+            'is_bug': is_bug,
+            'mos_status': str(mos_status) if mos_status else "Неизвестно",
+            'inv_status': str(inv_status) if inv_status else "Неизвестно"
         }
         if ms == js:
             categorized['match'].append(rec)
@@ -300,6 +367,11 @@ def categorize_and_prepare(mos_df, inv_df, matches, mos_used, inv_used):
         mos_id = m.get('Ключ проблемы')
         mos_url = get_task_url(mos_id, 'mos')
         
+        # Получаем статус задачи
+        mos_status = m.get(mos_status_col) if mos_status_col else None
+        if mos_status and isinstance(mos_status, float) and pd.isna(mos_status):
+            mos_status = None
+        
         # Определяем, является ли багом
         mos_title = m.get('Тема') or ""
         is_bug = isinstance(mos_title, str) and '[Баг]' in mos_title
@@ -309,7 +381,8 @@ def categorize_and_prepare(mos_df, inv_df, matches, mos_used, inv_used):
             'mos_title': mos_title,
             'mos_sprint': ms,
             'mos_url': mos_url,
-            'is_bug': is_bug
+            'is_bug': is_bug,
+            'mos_status': str(mos_status) if mos_status else "Неизвестно"
         })
 
     # inv only
@@ -328,6 +401,11 @@ def categorize_and_prepare(mos_df, inv_df, matches, mos_used, inv_used):
         inv_url = get_task_url(inv_id, 'inv')
         inv_title = j.get('Тема') or j.get('title') or ""
         
+        # Получаем статус задачи
+        inv_status = j.get(inv_status_col) if inv_status_col else None
+        if inv_status and isinstance(inv_status, float) and pd.isna(inv_status):
+            inv_status = None
+        
         # Определяем, является ли багом
         is_bug = isinstance(inv_title, str) and '[Баг]' in inv_title
         
@@ -336,14 +414,12 @@ def categorize_and_prepare(mos_df, inv_df, matches, mos_used, inv_used):
             'inv_title': inv_title,
             'inv_sprint': js,
             'inv_url': inv_url,
-            'is_bug': is_bug
+            'is_bug': is_bug,
+            'inv_status': str(inv_status) if inv_status else "Неизвестно"
         })
 
     return categorized
 
-# -------------------------
-# Экспорт в Excel
-# -------------------------
 def export_to_excel(categorized, out_file: Path, mos_df, inv_df):
     """
     Создает Excel файл с несколькими листами:
@@ -403,6 +479,18 @@ def export_to_excel(categorized, out_file: Path, mos_df, inv_df):
     bug_count_inv = sum(1 for item in categorized['inv_only'] if item.get('is_bug', False))
     total_bugs = bug_count_match + bug_count_diff + bug_count_mos + bug_count_inv
     
+    # Статистика по статусам
+    status_counts = {}
+    for cat in categorized.values():
+        for item in cat:
+            for sys in ['mos', 'inv']:
+                status_key = f'{sys}_status'
+                if status_key in item:
+                    status = item[status_key]
+                    if status not in status_counts:
+                        status_counts[status] = 0
+                    status_counts[status] += 1
+    
     stats_data = [
         ["Показатель", "Количество"],
         ["Всего задач ДИТ", len(categorized['match']) + len(categorized['diff_sprint']) + len(categorized['mos_only'])],
@@ -429,10 +517,28 @@ def export_to_excel(categorized, out_file: Path, mos_df, inv_df):
                 cell.fill = header_fill
                 cell.alignment = center_alignment
     
+    # Добавляем статистику по статусам
+    row_offset = len(stats_data) + 8
+    ws_summary.cell(row=row_offset, column=1, value="Распределение по статусам").font = Font(bold=True, size=12)
+    
+    status_data = [["Статус", "Количество"]]
+    for status, count in sorted(status_counts.items()):
+        status_data.append([status, count])
+    
+    for i, row in enumerate(status_data):
+        for j, value in enumerate(row):
+            cell = ws_summary.cell(row=row_offset + i + 1, column=j+1)
+            cell.value = value
+            cell.border = border_style
+            if i == 0:  # Заголовок таблицы
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = center_alignment
+    
     # Лист 2: Совпадения
     ws_matches = wb.create_sheet("Совпадения")
-    matches_headers = ["Спринт", "Ключ ДИТ", "Название ДИТ", "Ссылка ДИТ", 
-                      "Ключ Invaders", "Название Invaders", "Ссылка Invaders", "Статус", "Тип"]
+    matches_headers = ["Спринт", "Ключ ДИТ", "Название ДИТ", "Статус ДИТ", "Ссылка ДИТ", 
+                      "Ключ Invaders", "Название Invaders", "Статус Invaders", "Ссылка Invaders", "Статус", "Тип"]
     
     for col, header in enumerate(matches_headers, 1):
         cell = ws_matches.cell(row=1, column=col)
@@ -447,18 +553,20 @@ def export_to_excel(categorized, out_file: Path, mos_df, inv_df):
         ws_matches.cell(row=row, column=1, value=item['mos_sprint']).border = border_style
         ws_matches.cell(row=row, column=2, value=item['mos_id']).border = border_style
         ws_matches.cell(row=row, column=3, value=item['mos_title']).border = border_style
-        ws_matches.cell(row=row, column=4, value=item['mos_url']).border = border_style
-        ws_matches.cell(row=row, column=5, value=item['inv_id']).border = border_style
-        ws_matches.cell(row=row, column=6, value=item['inv_title']).border = border_style
-        ws_matches.cell(row=row, column=7, value=item['inv_url']).border = border_style
-        ws_matches.cell(row=row, column=8, value="Совпадение").border = border_style
-        ws_matches.cell(row=row, column=9, value="Баг" if item.get('is_bug', False) else "Задача").border = border_style
+        ws_matches.cell(row=row, column=4, value=item.get('mos_status', 'Неизвестно')).border = border_style
+        ws_matches.cell(row=row, column=5, value=item['mos_url']).border = border_style
+        ws_matches.cell(row=row, column=6, value=item['inv_id']).border = border_style
+        ws_matches.cell(row=row, column=7, value=item['inv_title']).border = border_style
+        ws_matches.cell(row=row, column=8, value=item.get('inv_status', 'Неизвестно')).border = border_style
+        ws_matches.cell(row=row, column=9, value=item['inv_url']).border = border_style
+        ws_matches.cell(row=row, column=10, value="Совпадение").border = border_style
+        ws_matches.cell(row=row, column=11, value="Баг" if item.get('is_bug', False) else "Задача").border = border_style
         row += 1
     
     # Лист 3: Разные спринты
     ws_diff = wb.create_sheet("Разные спринты")
-    diff_headers = ["Спринт ДИТ", "Спринт Invaders", "Ключ ДИТ", "Название ДИТ", 
-                   "Ссылка ДИТ", "Ключ Invaders", "Название Invaders", "Ссылка Invaders", "Статус", "Тип"]
+    diff_headers = ["Спринт ДИТ", "Спринт Invaders", "Ключ ДИТ", "Название ДИТ", "Статус ДИТ", 
+                   "Ссылка ДИТ", "Ключ Invaders", "Название Invaders", "Статус Invaders", "Ссылка Invaders", "Статус", "Тип"]
     
     for col, header in enumerate(diff_headers, 1):
         cell = ws_diff.cell(row=1, column=col)
@@ -474,17 +582,19 @@ def export_to_excel(categorized, out_file: Path, mos_df, inv_df):
         ws_diff.cell(row=row, column=2, value=item['inv_sprint']).border = border_style
         ws_diff.cell(row=row, column=3, value=item['mos_id']).border = border_style
         ws_diff.cell(row=row, column=4, value=item['mos_title']).border = border_style
-        ws_diff.cell(row=row, column=5, value=item['mos_url']).border = border_style
-        ws_diff.cell(row=row, column=6, value=item['inv_id']).border = border_style
-        ws_diff.cell(row=row, column=7, value=item['inv_title']).border = border_style
-        ws_diff.cell(row=row, column=8, value=item['inv_url']).border = border_style
-        ws_diff.cell(row=row, column=9, value="Разные спринты").border = border_style
-        ws_diff.cell(row=row, column=10, value="Баг" if item.get('is_bug', False) else "Задача").border = border_style
+        ws_diff.cell(row=row, column=5, value=item.get('mos_status', 'Неизвестно')).border = border_style
+        ws_diff.cell(row=row, column=6, value=item['mos_url']).border = border_style
+        ws_diff.cell(row=row, column=7, value=item['inv_id']).border = border_style
+        ws_diff.cell(row=row, column=8, value=item['inv_title']).border = border_style
+        ws_diff.cell(row=row, column=9, value=item.get('inv_status', 'Неизвестно')).border = border_style
+        ws_diff.cell(row=row, column=10, value=item['inv_url']).border = border_style
+        ws_diff.cell(row=row, column=11, value="Разные спринты").border = border_style
+        ws_diff.cell(row=row, column=12, value="Баг" if item.get('is_bug', False) else "Задача").border = border_style
         row += 1
     
-    # Лист 4: Только ДИТ
+    # Лист 4: Только ДИТ - ОБНОВЛЕНО: добавлена колонка статуса
     ws_mos_only = wb.create_sheet("Только ДИТ")
-    mos_only_headers = ["Спринт", "Ключ ДИТ", "Название ДИТ", "Ссылка ДИТ", "Тип"]
+    mos_only_headers = ["Спринт", "Ключ ДИТ", "Название ДИТ", "Статус ДИТ", "Ссылка ДИТ", "Тип"]
     
     for col, header in enumerate(mos_only_headers, 1):
         cell = ws_mos_only.cell(row=1, column=col)
@@ -499,13 +609,14 @@ def export_to_excel(categorized, out_file: Path, mos_df, inv_df):
         ws_mos_only.cell(row=row, column=1, value=item['mos_sprint']).border = border_style
         ws_mos_only.cell(row=row, column=2, value=item['mos_id']).border = border_style
         ws_mos_only.cell(row=row, column=3, value=item['mos_title']).border = border_style
-        ws_mos_only.cell(row=row, column=4, value=item['mos_url']).border = border_style
-        ws_mos_only.cell(row=row, column=5, value="Баг" if item.get('is_bug', False) else "Задача").border = border_style
+        ws_mos_only.cell(row=row, column=4, value=item.get('mos_status', 'Неизвестно')).border = border_style
+        ws_mos_only.cell(row=row, column=5, value=item['mos_url']).border = border_style
+        ws_mos_only.cell(row=row, column=6, value="Баг" if item.get('is_bug', False) else "Задача").border = border_style
         row += 1
     
     # Лист 5: Только Invaders
     ws_inv_only = wb.create_sheet("Только Invaders")
-    inv_only_headers = ["Спринт", "Ключ Invaders", "Название Invaders", "Ссылка Invaders", "Тип"]
+    inv_only_headers = ["Спринт", "Ключ Invaders", "Название Invaders", "Статус Invaders", "Ссылка Invaders", "Тип"]
     
     for col, header in enumerate(inv_only_headers, 1):
         cell = ws_inv_only.cell(row=1, column=col)
@@ -520,8 +631,9 @@ def export_to_excel(categorized, out_file: Path, mos_df, inv_df):
         ws_inv_only.cell(row=row, column=1, value=item['inv_sprint']).border = border_style
         ws_inv_only.cell(row=row, column=2, value=item['inv_id']).border = border_style
         ws_inv_only.cell(row=row, column=3, value=item['inv_title']).border = border_style
-        ws_inv_only.cell(row=row, column=4, value=item['inv_url']).border = border_style
-        ws_inv_only.cell(row=row, column=5, value="Баг" if item.get('is_bug', False) else "Задача").border = border_style
+        ws_inv_only.cell(row=row, column=4, value=item.get('inv_status', 'Неизвестно')).border = border_style
+        ws_inv_only.cell(row=row, column=5, value=item['inv_url']).border = border_style
+        ws_inv_only.cell(row=row, column=6, value="Баг" if item.get('is_bug', False) else "Задача").border = border_style
         row += 1
     
     # Лист 6: Исходные данные ДИТ (ограничим количество колонок)
@@ -616,12 +728,18 @@ def export_to_excel(categorized, out_file: Path, mos_df, inv_df):
             adjusted_width = min(max_length + 2, 50)
             ws.column_dimensions[column_letter].width = adjusted_width
     
+    # Автонастройка ширины для колонки "Статус ДИТ"
+    if 'Только ДИТ' in wb.sheetnames:
+        ws_mos_only = wb['Только ДИТ']
+        # Настраиваем ширину для колонки статуса (столбец D)
+        ws_mos_only.column_dimensions['D'].width = 30  # Ширина для статусов типа "На анализе у исполнителя"
+    
     # Сохраняем файл
     wb.save(out_file)
     print(f"Excel файл успешно создан: {out_file}")
 
 # -------------------------
-# HTML генерация с разделением на свимлайны
+# HTML генерация с разделением на свимлайны и статусами
 # -------------------------
 def generate_html(categorized, out_file: Path, mos_df, inv_df):
     # собрать все спринты и отсортировать по номеру
@@ -644,6 +762,24 @@ def generate_html(categorized, out_file: Path, mos_df, inv_df):
     # Подсчет статистики
     total_tasks = 0
     total_bugs = 0
+    status_colors = {
+        'готово': '#2f9e44',
+        'закрыт': '#2f9e44',
+        'выполнено': '#2f9e44',
+        'done': '#2f9e44',
+        'closed': '#2f9e44',
+        'resolved': '#2f9e44',
+        'в работе': '#e6b000',
+        'в прогрессе': '#e6b000',
+        'открыт': '#1e6fe0',
+        'новая': '#1e6fe0',
+        'to do': '#1e6fe0',
+        'open': '#1e6fe0',
+        'отложен': '#6b7280',
+        'отклонен': '#dc2626',
+        'rejected': '#dc2626'
+    }
+    
     for cat in categorized.values():
         for it in cat:
             total_tasks += 1
@@ -665,6 +801,7 @@ def generate_html(categorized, out_file: Path, mos_df, inv_df):
     .col-head{font-size:13px;background:#fff;padding:6px 8px;border-bottom:1px solid #e6e9ef}
     .task{border-radius:6px;padding:8px;margin-bottom:8px;font-size:13px;box-shadow:0 1px 0 rgba(0,0,0,0.03)}
     .task .id{font-weight:700;font-size:12px;color:#0b4470}
+    .task .status{display:inline-block;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:600;margin-left:8px;vertical-align:middle}
     .task .title{color:#0b1724;margin-top:4px}
     .task .title a{color:#0b1724;text-decoration:none;border-bottom:1px dotted #0b4470;}
     .task .title a:hover{color:#0b4470;border-bottom:1px solid #0b4470;}
@@ -700,6 +837,11 @@ def generate_html(categorized, out_file: Path, mos_df, inv_df):
     .swimlane-collapsed .swimlane-content{display:none}
     .bug-indicator{display:inline-block;background:#fef2f2;color:#dc2626;padding:2px 6px;border-radius:4px;font-size:11px;margin-left:6px;font-weight:600}
     .bug-task{border-left-color:#dc2626 !important}
+    .status-ready{background:#2f9e44;color:white}
+    .status-inprogress{background:#e6b000;color:white}
+    .status-open{background:#1e6fe0;color:white}
+    .status-other{background:#6b7280;color:white}
+    .status-rejected{background:#dc2626;color:white}
     </style>
     """
 
@@ -996,6 +1138,26 @@ def generate_html(categorized, out_file: Path, mos_df, inv_df):
     </script>
     """
 
+    # Функция для получения CSS класса статуса
+    def get_status_class(status_str):
+        if not status_str:
+            return 'status-other'
+        
+        status_lower = status_str.lower()
+        
+        if any(word in status_lower for word in ['готово', 'закрыт', 'выполнено', 'done', 'closed', 'resolved']):
+            return 'status-ready'
+        elif any(word in status_lower for word in ['в работе', 'в прогрессе', 'in progress', 'progress']):
+            return 'status-inprogress'
+        elif any(word in status_lower for word in ['открыт', 'новая', 'to do', 'open', 'new']):
+            return 'status-open'
+        elif any(word in status_lower for word in ['отклонен', 'rejected', 'declined']):
+            return 'status-rejected'
+        elif any(word in status_lower for word in ['отложен', 'отложено', 'отложена']):
+            return 'status-other'
+        else:
+            return 'status-other'
+
     # Собираем HTML
     html_parts = []
     html_parts.append("<!doctype html><html><head><meta charset='utf-8'><title>Сравнение ДИТ ↔ Invaders</title>")
@@ -1050,7 +1212,7 @@ def generate_html(categorized, out_file: Path, mos_df, inv_df):
     html_parts.append("</div>")
     html_parts.append("</div>")
     
-    html_parts.append("<div class='legend'><b>Легенда:</b> <span style='background:#e6f6ea;padding:4px 8px;border-radius:4px;margin-left:8px'>совпадение (зелёный)</span> <span style='background:#fff8e0;padding:4px 8px;border-radius:4px;margin-left:8px'>разные спринты (жёлтый)</span> <span style='background:#ffe9e9;padding:4px 8px;border-radius:4px;margin-left:8px'>только ДИТ (красный)</span> <span style='background:#e8f1ff;padding:4px 8px;border-radius:4px;margin-left:8px'>только Invaders (синий)</span> <span class='bug-indicator'>Баг</span></div>")
+    html_parts.append("<div class='legend'><b>Легенда:</b> <span style='background:#e6f6ea;padding:4px 8px;border-radius:4px;margin-left:8px'>совпадение (зелёный)</span> <span style='background:#fff8e0;padding:4px 8px;border-radius:4px;margin-left:8px'>разные спринты (жёлтый)</span> <span style='background:#ffe9e9;padding:4px 8px;border-radius:4px;margin-left:8px'>только ДИТ (красный)</span> <span style='background:#e8f1ff;padding:4px 8px;border-radius:4px;margin-left:8px'>только Invaders (синий)</span> <span class='bug-indicator'>Баг</span> <span class='status-ready' style='padding:2px 6px;border-radius:4px;margin-left:8px'>Готово</span> <span class='status-inprogress' style='padding:2px 6px;border-radius:4px;margin-left:8px'>В работе</span> <span class='status-open' style='padding:2px 6px;border-radius:4px;margin-left:8px'>Открыто</span></div>")
 
     # Свимлайн для обычных задач
     html_parts.append(f"<div id='tasks-swinlane' class='swimlane'>")
@@ -1079,15 +1241,23 @@ def generate_html(categorized, out_file: Path, mos_df, inv_df):
         # matches where both sprints equal this sp и НЕ баг
         for it in categorized['match']:
             if it.get('mos_sprint') == sp and it.get('inv_sprint') == sp and not it.get('is_bug', False):
+                status_class = get_status_class(it.get('mos_status'))
                 html_parts.append("<div class='task match'>")
-                html_parts.append(f"<div class='id'>{html.escape(str(it.get('mos_id') or ''))}</div>")
+                html_parts.append(f"<div class='id'>{html.escape(str(it.get('mos_id') or ''))}")
+                if it.get('mos_status') and it.get('mos_status') != 'Неизвестно':
+                    html_parts.append(f"<span class='status {status_class}'>{html.escape(str(it.get('mos_status')))}</span>")
+                html_parts.append("</div>")
                 html_parts.append(f"<div class='title'><a href='{it.get('mos_url', '#')}' target='_blank'>{html.escape(str(it.get('mos_title') or it.get('inv_title') or ''))}</a></div>")
                 html_parts.append("</div>")
         # diff_sprint where mos_sprint == sp и НЕ баг
         for it in categorized['diff_sprint']:
             if it.get('mos_sprint') == sp and not it.get('is_bug', False):
+                status_class = get_status_class(it.get('mos_status'))
                 html_parts.append("<div class='task diff'>")
-                html_parts.append(f"<div class='id'>{html.escape(str(it.get('mos_id') or it.get('inv_id') or ''))}</div>")
+                html_parts.append(f"<div class='id'>{html.escape(str(it.get('mos_id') or it.get('inv_id') or ''))}")
+                if it.get('mos_status') and it.get('mos_status') != 'Неизвестно':
+                    html_parts.append(f"<span class='status {status_class}'>{html.escape(str(it.get('mos_status')))}</span>")
+                html_parts.append("</div>")
                 if it.get('mos_url') != '#':
                     html_parts.append(f"<div class='title'>MOS: <a href='{it.get('mos_url')}' target='_blank'>{html.escape(str(it.get('mos_title') or ''))}</a><br/>INV: <a href='{it.get('inv_url')}' target='_blank'>{html.escape(str(it.get('inv_title') or ''))}</a></div>")
                 else:
@@ -1096,8 +1266,12 @@ def generate_html(categorized, out_file: Path, mos_df, inv_df):
         # mos_only и НЕ баг
         for it in categorized['mos_only']:
             if it.get('mos_sprint') == sp and not it.get('is_bug', False):
+                status_class = get_status_class(it.get('mos_status'))
                 html_parts.append("<div class='task mos-only'>")
-                html_parts.append(f"<div class='id'>{html.escape(str(it.get('mos_id') or ''))}</div>")
+                html_parts.append(f"<div class='id'>{html.escape(str(it.get('mos_id') or ''))}")
+                if it.get('mos_status') and it.get('mos_status') != 'Неизвестно':
+                    html_parts.append(f"<span class='status {status_class}'>{html.escape(str(it.get('mos_status')))}</span>")
+                html_parts.append("</div>")
                 if it.get('mos_url') != '#':
                     html_parts.append(f"<div class='title'><a href='{it.get('mos_url')}' target='_blank'>{html.escape(str(it.get('mos_title') or ''))}</a></div>")
                 else:
@@ -1109,14 +1283,22 @@ def generate_html(categorized, out_file: Path, mos_df, inv_df):
         html_parts.append("<td>")
         for it in categorized['match']:
             if it.get('inv_sprint') == sp and it.get('mos_sprint') == sp and not it.get('is_bug', False):
+                status_class = get_status_class(it.get('inv_status'))
                 html_parts.append("<div class='task match'>")
-                html_parts.append(f"<div class='id'>{html.escape(str(it.get('inv_id') or ''))}</div>")
+                html_parts.append(f"<div class='id'>{html.escape(str(it.get('inv_id') or ''))}")
+                if it.get('inv_status') and it.get('inv_status') != 'Неизвестно':
+                    html_parts.append(f"<span class='status {status_class}'>{html.escape(str(it.get('inv_status')))}</span>")
+                html_parts.append("</div>")
                 html_parts.append(f"<div class='title'><a href='{it.get('inv_url', '#')}' target='_blank'>{html.escape(str(it.get('inv_title') or it.get('mos_title') or ''))}</a></div>")
                 html_parts.append("</div>")
         for it in categorized['diff_sprint']:
             if it.get('inv_sprint') == sp and not it.get('is_bug', False):
+                status_class = get_status_class(it.get('inv_status'))
                 html_parts.append("<div class='task diff'>")
-                html_parts.append(f"<div class='id'>{html.escape(str(it.get('inv_id') or it.get('mos_id') or ''))}</div>")
+                html_parts.append(f"<div class='id'>{html.escape(str(it.get('inv_id') or it.get('mos_id') or ''))}")
+                if it.get('inv_status') and it.get('inv_status') != 'Неизвестно':
+                    html_parts.append(f"<span class='status {status_class}'>{html.escape(str(it.get('inv_status')))}</span>")
+                html_parts.append("</div>")
                 if it.get('inv_url') != '#':
                     html_parts.append(f"<div class='title'>INV: <a href='{it.get('inv_url')}' target='_blank'>{html.escape(str(it.get('inv_title') or ''))}</a><br/>MOS: <a href='{it.get('mos_url')}' target='_blank'>{html.escape(str(it.get('mos_title') or ''))}</a></div>")
                 else:
@@ -1124,8 +1306,12 @@ def generate_html(categorized, out_file: Path, mos_df, inv_df):
                 html_parts.append("</div>")
         for it in categorized['inv_only']:
             if it.get('inv_sprint') == sp and not it.get('is_bug', False):
+                status_class = get_status_class(it.get('inv_status'))
                 html_parts.append("<div class='task inv-only'>")
-                html_parts.append(f"<div class='id'>{html.escape(str(it.get('inv_id') or ''))}</div>")
+                html_parts.append(f"<div class='id'>{html.escape(str(it.get('inv_id') or ''))}")
+                if it.get('inv_status') and it.get('inv_status') != 'Неизвестно':
+                    html_parts.append(f"<span class='status {status_class}'>{html.escape(str(it.get('inv_status')))}</span>")
+                html_parts.append("</div>")
                 if it.get('inv_url') != '#':
                     html_parts.append(f"<div class='title'><a href='{it.get('inv_url')}' target='_blank'>{html.escape(str(it.get('inv_title') or ''))}</a></div>")
                 else:
@@ -1165,15 +1351,23 @@ def generate_html(categorized, out_file: Path, mos_df, inv_df):
         # matches where both sprints equal this sp и баг
         for it in categorized['match']:
             if it.get('mos_sprint') == sp and it.get('inv_sprint') == sp and it.get('is_bug', False):
+                status_class = get_status_class(it.get('mos_status'))
                 html_parts.append("<div class='task match bug-task'>")
-                html_parts.append(f"<div class='id'>{html.escape(str(it.get('mos_id') or ''))} <span class='bug-indicator'>БАГ</span></div>")
+                html_parts.append(f"<div class='id'>{html.escape(str(it.get('mos_id') or ''))} <span class='bug-indicator'>БАГ</span>")
+                if it.get('mos_status') and it.get('mos_status') != 'Неизвестно':
+                    html_parts.append(f"<span class='status {status_class}'>{html.escape(str(it.get('mos_status')))}</span>")
+                html_parts.append("</div>")
                 html_parts.append(f"<div class='title'><a href='{it.get('mos_url', '#')}' target='_blank'>{html.escape(str(it.get('mos_title') or it.get('inv_title') or ''))}</a></div>")
                 html_parts.append("</div>")
         # diff_sprint where mos_sprint == sp и баг
         for it in categorized['diff_sprint']:
             if it.get('mos_sprint') == sp and it.get('is_bug', False):
+                status_class = get_status_class(it.get('mos_status'))
                 html_parts.append("<div class='task diff bug-task'>")
-                html_parts.append(f"<div class='id'>{html.escape(str(it.get('mos_id') or it.get('inv_id') or ''))} <span class='bug-indicator'>БАГ</span></div>")
+                html_parts.append(f"<div class='id'>{html.escape(str(it.get('mos_id') or it.get('inv_id') or ''))} <span class='bug-indicator'>БАГ</span>")
+                if it.get('mos_status') and it.get('mos_status') != 'Неизвестно':
+                    html_parts.append(f"<span class='status {status_class}'>{html.escape(str(it.get('mos_status')))}</span>")
+                html_parts.append("</div>")
                 if it.get('mos_url') != '#':
                     html_parts.append(f"<div class='title'>MOS: <a href='{it.get('mos_url')}' target='_blank'>{html.escape(str(it.get('mos_title') or ''))}</a><br/>INV: <a href='{it.get('inv_url')}' target='_blank'>{html.escape(str(it.get('inv_title') or ''))}</a></div>")
                 else:
@@ -1182,8 +1376,12 @@ def generate_html(categorized, out_file: Path, mos_df, inv_df):
         # mos_only и баг
         for it in categorized['mos_only']:
             if it.get('mos_sprint') == sp and it.get('is_bug', False):
+                status_class = get_status_class(it.get('mos_status'))
                 html_parts.append("<div class='task mos-only bug-task'>")
-                html_parts.append(f"<div class='id'>{html.escape(str(it.get('mos_id') or ''))} <span class='bug-indicator'>БАГ</span></div>")
+                html_parts.append(f"<div class='id'>{html.escape(str(it.get('mos_id') or ''))} <span class='bug-indicator'>БАГ</span>")
+                if it.get('mos_status') and it.get('mos_status') != 'Неизвестно':
+                    html_parts.append(f"<span class='status {status_class}'>{html.escape(str(it.get('mos_status')))}</span>")
+                html_parts.append("</div>")
                 if it.get('mos_url') != '#':
                     html_parts.append(f"<div class='title'><a href='{it.get('mos_url')}' target='_blank'>{html.escape(str(it.get('mos_title') or ''))}</a></div>")
                 else:
@@ -1195,14 +1393,22 @@ def generate_html(categorized, out_file: Path, mos_df, inv_df):
         html_parts.append("<td>")
         for it in categorized['match']:
             if it.get('inv_sprint') == sp and it.get('mos_sprint') == sp and it.get('is_bug', False):
+                status_class = get_status_class(it.get('inv_status'))
                 html_parts.append("<div class='task match bug-task'>")
-                html_parts.append(f"<div class='id'>{html.escape(str(it.get('inv_id') or ''))} <span class='bug-indicator'>БАГ</span></div>")
+                html_parts.append(f"<div class='id'>{html.escape(str(it.get('inv_id') or ''))} <span class='bug-indicator'>БАГ</span>")
+                if it.get('inv_status') and it.get('inv_status') != 'Неизвестно':
+                    html_parts.append(f"<span class='status {status_class}'>{html.escape(str(it.get('inv_status')))}</span>")
+                html_parts.append("</div>")
                 html_parts.append(f"<div class='title'><a href='{it.get('inv_url', '#')}' target='_blank'>{html.escape(str(it.get('inv_title') or it.get('mos_title') or ''))}</a></div>")
                 html_parts.append("</div>")
         for it in categorized['diff_sprint']:
             if it.get('inv_sprint') == sp and it.get('is_bug', False):
+                status_class = get_status_class(it.get('inv_status'))
                 html_parts.append("<div class='task diff bug-task'>")
-                html_parts.append(f"<div class='id'>{html.escape(str(it.get('inv_id') or it.get('mos_id') or ''))} <span class='bug-indicator'>БАГ</span></div>")
+                html_parts.append(f"<div class='id'>{html.escape(str(it.get('inv_id') or it.get('mos_id') or ''))} <span class='bug-indicator'>БАГ</span>")
+                if it.get('inv_status') and it.get('inv_status') != 'Неизвестно':
+                    html_parts.append(f"<span class='status {status_class}'>{html.escape(str(it.get('inv_status')))}</span>")
+                html_parts.append("</div>")
                 if it.get('inv_url') != '#':
                     html_parts.append(f"<div class='title'>INV: <a href='{it.get('inv_url')}' target='_blank'>{html.escape(str(it.get('inv_title') or ''))}</a><br/>MOS: <a href='{it.get('mos_url')}' target='_blank'>{html.escape(str(it.get('mos_title') or ''))}</a></div>")
                 else:
@@ -1210,8 +1416,12 @@ def generate_html(categorized, out_file: Path, mos_df, inv_df):
                 html_parts.append("</div>")
         for it in categorized['inv_only']:
             if it.get('inv_sprint') == sp and it.get('is_bug', False):
+                status_class = get_status_class(it.get('inv_status'))
                 html_parts.append("<div class='task inv-only bug-task'>")
-                html_parts.append(f"<div class='id'>{html.escape(str(it.get('inv_id') or ''))} <span class='bug-indicator'>БАГ</span></div>")
+                html_parts.append(f"<div class='id'>{html.escape(str(it.get('inv_id') or ''))} <span class='bug-indicator'>БАГ</span>")
+                if it.get('inv_status') and it.get('inv_status') != 'Неизвестно':
+                    html_parts.append(f"<span class='status {status_class}'>{html.escape(str(it.get('inv_status')))}</span>")
+                html_parts.append("</div>")
                 if it.get('inv_url') != '#':
                     html_parts.append(f"<div class='title'><a href='{it.get('inv_url')}' target='_blank'>{html.escape(str(it.get('inv_title') or ''))}</a></div>")
                 else:
@@ -1232,7 +1442,7 @@ def generate_html(categorized, out_file: Path, mos_df, inv_df):
     print("Saved HTML:", str(out_file))
 
 # -------------------------
-# Main
+# Main - с улучшенным поиском спринтов
 # -------------------------
 def main():
     base = Path(__file__).parent
@@ -1250,6 +1460,12 @@ def main():
 
     mos_df = read_csv_guess(mos_path)
     inv_df = read_csv_guess(inv_path)
+    
+    print("=" * 80)
+    print("Анализ файлов...")
+    print(f"Колонки Mos.csv: {list(mos_df.columns)}")
+    print(f"Колонки Invaders.csv: {list(inv_df.columns)}")
+    print("=" * 80)
 
     # гарантируем необходимые колонки
     if 'Тема' not in mos_df.columns:
@@ -1261,18 +1477,61 @@ def main():
     if 'Тема' not in inv_df.columns:
         # если нет такой колонки, попробуем первые колонки
         inv_df['Тема'] = inv_df.iloc[:, 0].astype(str)
-    # Попытка найти релизный спринт колонку
-    rel_cols = [c for c in inv_df.columns if 'Релиз' in c and 'Спринт' in c]
-    if rel_cols:
-        rel_col = rel_cols[0]
-        inv_df['Пользовательское поле (Релизный спринт)'] = inv_df[rel_col]
+    
+    # Поиск колонки со спринтом в Invaders
+    print("\nПоиск колонки со спринтом в Invaders...")
+    sprint_col = None
+    
+    # Возможные названия колонки со спринтом
+    possible_names = [
+        'Релизный спринт', 'Release Sprint', 'Sprint', 'Спринт',
+        'Пользовательское поле (Релизный спринт)',
+        'Custom field (Release Sprint)'
+    ]
+    
+    # Ищем точное совпадение
+    for col in inv_df.columns:
+        col_str = str(col).strip()
+        if col_str in possible_names:
+            sprint_col = col
+            print(f"  ✓ Найдена колонка спринта: '{sprint_col}'")
+            break
+    
+    # Если не нашли точное совпадение, ищем частичное
+    if not sprint_col:
+        for col in inv_df.columns:
+            col_lower = str(col).lower()
+            if any(name.lower() in col_lower for name in ['спринт', 'sprint', 'релиз']):
+                sprint_col = col
+                print(f"  ⚠️ Найдена похожая колонка: '{col}'")
+                break
+    
+    # Если все еще не нашли, показываем первые значения из каждой колонки
+    if not sprint_col:
+        print("  ❗ Не найдена колонка со спринтом. Проверяем содержимое колонок...")
+        for col in inv_df.columns[:5]:  # Проверяем первые 5 колонок
+            sample_values = inv_df[col].dropna().head(3)
+            if not sample_values.empty:
+                print(f"    Колонка '{col}': {list(sample_values.values)}")
+                # Проверяем, содержат ли значения слово "спринт"
+                for val in sample_values:
+                    if isinstance(val, str) and ('спринт' in val.lower() or 'sprint' in val.lower()):
+                        sprint_col = col
+                        print(f"  ✓ Возможно это колонка спринта: '{col}'")
+                        break
+            if sprint_col:
+                break
+    
+    if sprint_col:
+        inv_df['Пользовательское поле (Релизный спринт)'] = inv_df[sprint_col]
     else:
-        if 'Пользовательское поле (Релизный спринт)' not in inv_df.columns:
-            inv_df['Пользовательское поле (Релизный спринт)'] = None
+        print("  ❗ Не удалось найти колонку со спринтом. Используем 'Нет спринта'")
+        inv_df['Пользовательское поле (Релизный спринт)'] = None
 
     # нормализация: canonical sprint и извлечение ключа из темы Invaders
     mos_df['Компоненты'] = mos_df.get('Компоненты', None)
     mos_df['sprint'] = mos_df['Компоненты'].apply(canonical_sprint)
+    
     inv_df['Ключ проблемы'] = inv_df.get('Ключ проблемы')  # если уже есть, оставим
     # если ключа нет, попытаемся извлечь из Тема
     inv_df['maybe_key'] = inv_df['Тема'].apply(extract_inv_key_from_text)
@@ -1281,24 +1540,75 @@ def main():
         else r['maybe_key']
     ), axis=1)
     inv_df['sprint'] = inv_df['Пользовательское поле (Релизный спринт)'].apply(canonical_sprint)
+    
+    # Статистика
+    print(f"\nСтатистика по спринтам:")
+    print(f"  ДИТ: {mos_df['sprint'].nunique()} уникальных спринтов")
+    print(f"  Invaders: {inv_df['sprint'].nunique()} уникальных спринтов")
+    
+    if inv_df['sprint'].nunique() == 1 and inv_df['sprint'].iloc[0] == "Нет спринта":
+        print("\n⚠️ ВНИМАНИЕ: В файле Invaders не найдены спринты!")
+        print("Возможные причины:")
+        print("  1. Колонка со спринтом называется по-другому")
+        print("  2. В данных нет информации о спринтах")
+        print("  3. Формат данных отличается от ожидаемого")
+        print("\nПроверьте CSV файл и убедитесь, что есть колонка с названием спринтов.")
 
     # Выполняем матчи
+    print("\nВыполняем сопоставление задач...")
     matches, mos_used, inv_used = match_two_way(mos_df, inv_df)
+    
+    print(f"\nРезультаты сопоставления:")
+    print(f"  Найдено совпадений: {len(matches)}")
+    print(f"  Задействовано задач из ДИТ: {len(mos_used)}")
+    print(f"  Задействовано задач из Invaders: {len(inv_used)}")
+    
     categorized = categorize_and_prepare(mos_df, inv_df, matches, mos_used, inv_used)
+    
+    print(f"\nКатегоризация:")
+    print(f"  Совпадения (один спринт): {len(categorized['match'])}")
+    print(f"  Совпадения (разные спринты): {len(categorized['diff_sprint'])}")
+    print(f"  Только в ДИТ: {len(categorized['mos_only'])}")
+    print(f"  Только в Invaders: {len(categorized['inv_only'])}")
+    
+    # Статистика по статусам
+    print(f"\nСтатистика по статусам:")
+    status_stats = {}
+    for cat_name, cat_list in categorized.items():
+        for item in cat_list:
+            for sys in ['mos', 'inv']:
+                status_key = f'{sys}_status'
+                if status_key in item:
+                    status = item[status_key]
+                    if status not in status_stats:
+                        status_stats[status] = 0
+                    status_stats[status] += 1
+    
+    for status, count in sorted(status_stats.items()):
+        print(f"  {status}: {count}")
 
     # генерируем HTML
+    print(f"\nГенерация HTML отчета...")
     generate_html(categorized, out_path, mos_df, inv_df)
     
     # экспортируем в Excel
     try:
+        print(f"\nЭкспорт в Excel...")
         export_to_excel(categorized, excel_path, mos_df, inv_df)
+        print(f"✓ Excel отчет создан: {excel_path}")
     except ImportError:
-        print("Для экспорта в Excel требуется библиотека openpyxl.")
+        print("\n❌ Для экспорта в Excel требуется библиотека openpyxl.")
         print("Установите её командой: pip install openpyxl")
     except Exception as e:
-        print(f"Ошибка при создании Excel файла: {e}")
+        print(f"\n❌ Ошибка при создании Excel файла: {e}")
         import traceback
         traceback.print_exc()
+    
+    print("\n" + "=" * 80)
+    print("Обработка завершена!")
+    print(f"HTML отчет: {out_path}")
+    print(f"Excel отчет: {excel_path}")
+    print("=" * 80)
 
 if __name__ == "__main__":
     main()
