@@ -9,6 +9,7 @@ main.py
  - фильтр по задаче
  - фильтр по спринту
  - выгрузку в Excel
+ - разделение на свимлайны "Задачи" и "Баги"
 Запуск: нажать Run в IDE (PyCharm/VSCode и т.д.)
 Зависимости: pandas, openpyxl
     pip install pandas openpyxl
@@ -236,7 +237,7 @@ def categorize_and_prepare(mos_df, inv_df, matches, mos_used, inv_used):
     """
     Возвращает структуру categorized:
       {
-        'match': [ {mos_id, inv_id, mos_title, inv_title, mos_sprint, inv_sprint, mos_url, inv_url}, ... ],
+        'match': [ {mos_id, inv_id, mos_title, inv_title, mos_sprint, inv_sprint, mos_url, inv_url, is_bug}, ... ],
         'diff_sprint': [...],
         'mos_only': [...],
         'inv_only': [...]
@@ -263,15 +264,28 @@ def categorize_and_prepare(mos_df, inv_df, matches, mos_used, inv_used):
         mos_url = get_task_url(mos_id, 'mos')
         inv_url = get_task_url(inv_id, 'inv')
         
+        # Определяем, является ли задача багом
+        # Проверяем в названии Invaders наличие [Баг]
+        inv_title = j.get('Тема') or j.get('title') or ""
+        is_bug = False
+        if isinstance(inv_title, str) and '[Баг]' in inv_title:
+            is_bug = True
+        else:
+            # Также проверяем в названии ДИТ
+            mos_title = m.get('Тема') or ""
+            if isinstance(mos_title, str) and '[Баг]' in mos_title:
+                is_bug = True
+        
         rec = {
             'mos_id': mos_id,
             'inv_id': inv_id,
             'mos_title': m.get('Тема'),
-            'inv_title': j.get('Тема') or j.get('title'),
+            'inv_title': inv_title,
             'mos_sprint': ms,
             'inv_sprint': js,
             'mos_url': mos_url,
-            'inv_url': inv_url
+            'inv_url': inv_url,
+            'is_bug': is_bug
         }
         if ms == js:
             categorized['match'].append(rec)
@@ -286,11 +300,16 @@ def categorize_and_prepare(mos_df, inv_df, matches, mos_used, inv_used):
         mos_id = m.get('Ключ проблемы')
         mos_url = get_task_url(mos_id, 'mos')
         
+        # Определяем, является ли багом
+        mos_title = m.get('Тема') or ""
+        is_bug = isinstance(mos_title, str) and '[Баг]' in mos_title
+        
         categorized['mos_only'].append({
             'mos_id': mos_id,
-            'mos_title': m.get('Тема'),
+            'mos_title': mos_title,
             'mos_sprint': ms,
-            'mos_url': mos_url
+            'mos_url': mos_url,
+            'is_bug': is_bug
         })
 
     # inv only
@@ -307,12 +326,17 @@ def categorize_and_prepare(mos_df, inv_df, matches, mos_used, inv_used):
                 inv_id = normalized_inv_id
         
         inv_url = get_task_url(inv_id, 'inv')
+        inv_title = j.get('Тема') or j.get('title') or ""
+        
+        # Определяем, является ли багом
+        is_bug = isinstance(inv_title, str) and '[Баг]' in inv_title
         
         categorized['inv_only'].append({
             'inv_id': inv_id,
-            'inv_title': j.get('Тема') or j.get('title'),
+            'inv_title': inv_title,
             'inv_sprint': js,
-            'inv_url': inv_url
+            'inv_url': inv_url,
+            'is_bug': is_bug
         })
 
     return categorized
@@ -372,6 +396,13 @@ def export_to_excel(categorized, out_file: Path, mos_df, inv_df):
     ws_summary['A5'] = "Статистика"
     ws_summary['A5'].font = Font(bold=True, size=12)
     
+    # Подсчет багов
+    bug_count_match = sum(1 for item in categorized['match'] if item.get('is_bug', False))
+    bug_count_diff = sum(1 for item in categorized['diff_sprint'] if item.get('is_bug', False))
+    bug_count_mos = sum(1 for item in categorized['mos_only'] if item.get('is_bug', False))
+    bug_count_inv = sum(1 for item in categorized['inv_only'] if item.get('is_bug', False))
+    total_bugs = bug_count_match + bug_count_diff + bug_count_mos + bug_count_inv
+    
     stats_data = [
         ["Показатель", "Количество"],
         ["Всего задач ДИТ", len(categorized['match']) + len(categorized['diff_sprint']) + len(categorized['mos_only'])],
@@ -381,7 +412,11 @@ def export_to_excel(categorized, out_file: Path, mos_df, inv_df):
         ["Только в ДИТ", len(categorized['mos_only'])],
         ["Только в Invaders", len(categorized['inv_only'])],
         ["Всего совпадений", len(categorized['match']) + len(categorized['diff_sprint'])],
-        ["Процент совпадений", f"{(len(categorized['match']) + len(categorized['diff_sprint'])) / max(len(categorized['match']) + len(categorized['diff_sprint']) + len(categorized['mos_only']), 1) * 100:.1f}%"]
+        ["Процент совпадений", f"{(len(categorized['match']) + len(categorized['diff_sprint'])) / max(len(categorized['match']) + len(categorized['diff_sprint']) + len(categorized['mos_only']), 1) * 100:.1f}%"],
+        ["Всего багов", total_bugs],
+        ["Баги в совпадениях", bug_count_match + bug_count_diff],
+        ["Баги только в ДИТ", bug_count_mos],
+        ["Баги только в Invaders", bug_count_inv]
     ]
     
     for i, row in enumerate(stats_data):
@@ -397,7 +432,7 @@ def export_to_excel(categorized, out_file: Path, mos_df, inv_df):
     # Лист 2: Совпадения
     ws_matches = wb.create_sheet("Совпадения")
     matches_headers = ["Спринт", "Ключ ДИТ", "Название ДИТ", "Ссылка ДИТ", 
-                      "Ключ Invaders", "Название Invaders", "Ссылка Invaders", "Статус"]
+                      "Ключ Invaders", "Название Invaders", "Ссылка Invaders", "Статус", "Тип"]
     
     for col, header in enumerate(matches_headers, 1):
         cell = ws_matches.cell(row=1, column=col)
@@ -417,12 +452,13 @@ def export_to_excel(categorized, out_file: Path, mos_df, inv_df):
         ws_matches.cell(row=row, column=6, value=item['inv_title']).border = border_style
         ws_matches.cell(row=row, column=7, value=item['inv_url']).border = border_style
         ws_matches.cell(row=row, column=8, value="Совпадение").border = border_style
+        ws_matches.cell(row=row, column=9, value="Баг" if item.get('is_bug', False) else "Задача").border = border_style
         row += 1
     
     # Лист 3: Разные спринты
     ws_diff = wb.create_sheet("Разные спринты")
     diff_headers = ["Спринт ДИТ", "Спринт Invaders", "Ключ ДИТ", "Название ДИТ", 
-                   "Ссылка ДИТ", "Ключ Invaders", "Название Invaders", "Ссылка Invaders", "Статус"]
+                   "Ссылка ДИТ", "Ключ Invaders", "Название Invaders", "Ссылка Invaders", "Статус", "Тип"]
     
     for col, header in enumerate(diff_headers, 1):
         cell = ws_diff.cell(row=1, column=col)
@@ -443,11 +479,12 @@ def export_to_excel(categorized, out_file: Path, mos_df, inv_df):
         ws_diff.cell(row=row, column=7, value=item['inv_title']).border = border_style
         ws_diff.cell(row=row, column=8, value=item['inv_url']).border = border_style
         ws_diff.cell(row=row, column=9, value="Разные спринты").border = border_style
+        ws_diff.cell(row=row, column=10, value="Баг" if item.get('is_bug', False) else "Задача").border = border_style
         row += 1
     
     # Лист 4: Только ДИТ
     ws_mos_only = wb.create_sheet("Только ДИТ")
-    mos_only_headers = ["Спринт", "Ключ ДИТ", "Название ДИТ", "Ссылка ДИТ"]
+    mos_only_headers = ["Спринт", "Ключ ДИТ", "Название ДИТ", "Ссылка ДИТ", "Тип"]
     
     for col, header in enumerate(mos_only_headers, 1):
         cell = ws_mos_only.cell(row=1, column=col)
@@ -463,11 +500,12 @@ def export_to_excel(categorized, out_file: Path, mos_df, inv_df):
         ws_mos_only.cell(row=row, column=2, value=item['mos_id']).border = border_style
         ws_mos_only.cell(row=row, column=3, value=item['mos_title']).border = border_style
         ws_mos_only.cell(row=row, column=4, value=item['mos_url']).border = border_style
+        ws_mos_only.cell(row=row, column=5, value="Баг" if item.get('is_bug', False) else "Задача").border = border_style
         row += 1
     
     # Лист 5: Только Invaders
     ws_inv_only = wb.create_sheet("Только Invaders")
-    inv_only_headers = ["Спринт", "Ключ Invaders", "Название Invaders", "Ссылка Invaders"]
+    inv_only_headers = ["Спринт", "Ключ Invaders", "Название Invaders", "Ссылка Invaders", "Тип"]
     
     for col, header in enumerate(inv_only_headers, 1):
         cell = ws_inv_only.cell(row=1, column=col)
@@ -483,6 +521,7 @@ def export_to_excel(categorized, out_file: Path, mos_df, inv_df):
         ws_inv_only.cell(row=row, column=2, value=item['inv_id']).border = border_style
         ws_inv_only.cell(row=row, column=3, value=item['inv_title']).border = border_style
         ws_inv_only.cell(row=row, column=4, value=item['inv_url']).border = border_style
+        ws_inv_only.cell(row=row, column=5, value="Баг" if item.get('is_bug', False) else "Задача").border = border_style
         row += 1
     
     # Лист 6: Исходные данные ДИТ (ограничим количество колонок)
@@ -582,7 +621,7 @@ def export_to_excel(categorized, out_file: Path, mos_df, inv_df):
     print(f"Excel файл успешно создан: {out_file}")
 
 # -------------------------
-# HTML генерация (визуал как у примера)
+# HTML генерация с разделением на свимлайны
 # -------------------------
 def generate_html(categorized, out_file: Path, mos_df, inv_df):
     # собрать все спринты и отсортировать по номеру
@@ -602,12 +641,23 @@ def generate_html(categorized, out_file: Path, mos_df, inv_df):
 
     sorted_sprints = sorted(list(sprint_set), key=sprint_key)
 
+    # Подсчет статистики
+    total_tasks = 0
+    total_bugs = 0
+    for cat in categorized.values():
+        for it in cat:
+            total_tasks += 1
+            if it.get('is_bug', False):
+                total_bugs += 1
+    total_regular = total_tasks - total_bugs
+
     # CSS + JS (приближённый к твоему образцу)
     css = """
     <style>
     body{font-family:Inter, Arial, sans-serif;background:#f6f7fb;margin:0;padding:24px}
     .container{max-width:1300px;margin:0 auto;background:#fff;padding:18px;border-radius:8px;box-shadow:0 6px 18px rgba(20,20,50,0.06)}
     h1{font-size:18px;margin:0 0 12px}
+    h2{font-size:16px;margin:20px 0 12px;color:#0f1724}
     .legend{margin-bottom:12px;font-size:13px}
     table{width:100%;border-collapse:collapse}
     th{background:#0f1724;color:#fff;padding:8px;font-weight:600}
@@ -641,21 +691,66 @@ def generate_html(categorized, out_file: Path, mos_df, inv_df):
     .table-container{overflow-x:auto;margin-top:16px}
     .export-section{margin-top:16px;padding:12px;background:#f8fafc;border-radius:6px;border:1px solid #e6e9ef}
     .export-info{font-size:13px;color:#4b5563;margin-top:8px}
+    .swimlane{margin-bottom:24px;border:1px solid #e6e9ef;border-radius:8px;overflow:hidden}
+    .swimlane-header{background:#f8fafc;padding:12px 16px;border-bottom:1px solid #e6e9ef;cursor:pointer;display:flex;justify-content:space-between;align-items:center}
+    .swimlane-header:hover{background:#f1f5f9}
+    .swimlane-title{font-weight:600;font-size:14px}
+    .swimlane-count{background:#e6e9ef;color:#0f1724;padding:2px 8px;border-radius:12px;font-size:12px}
+    .swimlane-content{padding:0}
+    .swimlane-collapsed .swimlane-content{display:none}
+    .bug-indicator{display:inline-block;background:#fef2f2;color:#dc2626;padding:2px 6px;border-radius:4px;font-size:11px;margin-left:6px;font-weight:600}
+    .bug-task{border-left-color:#dc2626 !important}
     </style>
     """
 
     js = """
     <script>
-    let originalTableHTML = '';
+    let originalTableHTML = {tasks: '', bugs: ''};
     let allSprints = [];
     let currentFilteredSprint = '';
     
     document.addEventListener('DOMContentLoaded', function() {
-        // Сохраняем оригинальную таблицу и список спринтов
-        originalTableHTML = document.querySelector('table').outerHTML;
+        // Сохраняем оригинальные таблицы и список спринтов
+        const tasksTable = document.querySelector('#tasks-swinlane table');
+        const bugsTable = document.querySelector('#bugs-swinlane table');
+        if (tasksTable) originalTableHTML.tasks = tasksTable.outerHTML;
+        if (bugsTable) originalTableHTML.bugs = bugsTable.outerHTML;
+        
         const sprintSelect = document.getElementById('sprintFilter');
         allSprints = Array.from(sprintSelect.options).map(opt => opt.value).filter(val => val);
+        
+        // Инициализируем свимлайны
+        initSwimlanes();
     });
+    
+    function initSwimlanes() {
+        const swimlaneHeaders = document.querySelectorAll('.swimlane-header');
+        swimlaneHeaders.forEach(header => {
+            header.addEventListener('click', function() {
+                const swimlane = this.parentElement;
+                swimlane.classList.toggle('swimlane-collapsed');
+            });
+        });
+    }
+    
+    function toggleSwimlane(swimlaneId) {
+        const swimlane = document.getElementById(swimlaneId);
+        if (swimlane) {
+            swimlane.classList.toggle('swimlane-collapsed');
+        }
+    }
+    
+    function expandAllSwimlanes() {
+        document.querySelectorAll('.swimlane').forEach(swimlane => {
+            swimlane.classList.remove('swimlane-collapsed');
+        });
+    }
+    
+    function collapseAllSwimlanes() {
+        document.querySelectorAll('.swimlane').forEach(swimlane => {
+            swimlane.classList.add('swimlane-collapsed');
+        });
+    }
     
     function toggleClass(cls){
         const els = document.querySelectorAll('.' + cls);
@@ -665,9 +760,24 @@ def generate_html(categorized, out_file: Path, mos_df, inv_df):
     }
     
     function showAll(){
-        // Восстанавливаем оригинальную таблицу
-        const tableContainer = document.querySelector('.table-container');
-        tableContainer.innerHTML = originalTableHTML;
+        // Восстанавливаем оригинальные таблицы
+        const tasksSwimlane = document.getElementById('tasks-swinlane');
+        const bugsSwimlane = document.getElementById('bugs-swinlane');
+        
+        if (tasksSwimlane && originalTableHTML.tasks) {
+            const tableContainer = tasksSwimlane.querySelector('.table-container');
+            if (tableContainer) {
+                tableContainer.innerHTML = originalTableHTML.tasks;
+            }
+        }
+        
+        if (bugsSwimlane && originalTableHTML.bugs) {
+            const tableContainer = bugsSwimlane.querySelector('.table-container');
+            if (tableContainer) {
+                tableContainer.innerHTML = originalTableHTML.bugs;
+            }
+        }
+        
         currentFilteredSprint = '';
         
         // Сбрасываем выпадающий список
@@ -730,97 +840,105 @@ def generate_html(categorized, out_file: Path, mos_df, inv_df):
         
         currentFilteredSprint = selectedSprint;
         
-        // Восстанавливаем оригинальную таблицу
-        const tableContainer = document.querySelector('.table-container');
-        const table = document.querySelector('table');
-        
-        if (!table) {
-            console.error('Table not found');
-            return;
-        }
-        
-        // Создаем новую таблицу только с выбранным спринтом
-        const newTable = document.createElement('table');
-        
-        // Создаем заголовки для выбранного спринта
-        const thead = document.createElement('thead');
-        
-        // Первая строка заголовков
-        const headerRow1 = document.createElement('tr');
-        const headerCell1 = document.createElement('th');
-        headerCell1.colSpan = 2;
-        headerCell1.textContent = selectedSprint;
-        headerRow1.appendChild(headerCell1);
-        thead.appendChild(headerRow1);
-        
-        // Вторая строка заголовков
-        const headerRow2 = document.createElement('tr');
-        const headerCellDit = document.createElement('th');
-        headerCellDit.className = 'col-head';
-        headerCellDit.textContent = 'ДИТ';
-        headerRow2.appendChild(headerCellDit);
-        
-        const headerCellInv = document.createElement('th');
-        headerCellInv.className = 'col-head';
-        headerCellInv.textContent = 'Invaders';
-        headerRow2.appendChild(headerCellInv);
-        thead.appendChild(headerRow2);
-        
-        newTable.appendChild(thead);
-        
-        // Создаем тело таблицы
-        const tbody = document.createElement('tbody');
-        const bodyRow = document.createElement('tr');
-        
-        // Колонка ДИТ
-        const ditCell = document.createElement('td');
-        
-        // Находим индекс спринта в оригинальной таблице
-        const originalTable = document.createElement('div');
-        originalTable.innerHTML = originalTableHTML;
-        const originalSprintHeaders = originalTable.querySelectorAll('th[colspan="2"]');
-        let sprintIndex = -1;
-        
-        for (let i = 0; i < originalSprintHeaders.length; i++) {
-            if (originalSprintHeaders[i].textContent.trim() === selectedSprint) {
-                sprintIndex = i;
-                break;
-            }
-        }
-        
-        if (sprintIndex !== -1) {
-            // Получаем все задачи из оригинальной таблицы для этого спринта
-            const originalTds = originalTable.querySelectorAll('td');
-            const ditCellIndex = sprintIndex * 2;
+        // Фильтруем обе таблицы (задачи и баги)
+        ['tasks-swinlane', 'bugs-swinlane'].forEach(swimlaneId => {
+            const swimlane = document.getElementById(swimlaneId);
+            if (!swimlane) return;
             
-            if (ditCellIndex < originalTds.length) {
-                // Копируем содержимое колонки ДИТ
-                ditCell.innerHTML = originalTds[ditCellIndex].innerHTML;
-            }
-        }
-        
-        bodyRow.appendChild(ditCell);
-        
-        // Колонка Invaders
-        const invCell = document.createElement('td');
-        
-        if (sprintIndex !== -1) {
-            const originalTds = originalTable.querySelectorAll('td');
-            const invCellIndex = sprintIndex * 2 + 1;
+            const tableContainer = swimlane.querySelector('.table-container');
+            const table = swimlane.querySelector('table');
             
-            if (invCellIndex < originalTds.length) {
-                // Копируем содержимое колонки Invaders
-                invCell.innerHTML = originalTds[invCellIndex].innerHTML;
+            if (!table) {
+                console.error('Table not found in', swimlaneId);
+                return;
             }
-        }
-        
-        bodyRow.appendChild(invCell);
-        tbody.appendChild(bodyRow);
-        newTable.appendChild(tbody);
-        
-        // Заменяем таблицу
-        tableContainer.innerHTML = '';
-        tableContainer.appendChild(newTable);
+            
+            // Получаем оригинальную таблицу для этого свимлайна
+            const originalHTML = swimlaneId === 'tasks-swinlane' ? originalTableHTML.tasks : originalTableHTML.bugs;
+            
+            // Создаем новую таблицу только с выбранным спринтом
+            const newTable = document.createElement('table');
+            
+            // Создаем заголовки для выбранного спринта
+            const thead = document.createElement('thead');
+            
+            // Первая строка заголовков
+            const headerRow1 = document.createElement('tr');
+            const headerCell1 = document.createElement('th');
+            headerCell1.colSpan = 2;
+            headerCell1.textContent = selectedSprint;
+            headerRow1.appendChild(headerCell1);
+            thead.appendChild(headerRow1);
+            
+            // Вторая строка заголовков
+            const headerRow2 = document.createElement('tr');
+            const headerCellDit = document.createElement('th');
+            headerCellDit.className = 'col-head';
+            headerCellDit.textContent = 'ДИТ';
+            headerRow2.appendChild(headerCellDit);
+            
+            const headerCellInv = document.createElement('th');
+            headerCellInv.className = 'col-head';
+            headerCellInv.textContent = 'Invaders';
+            headerRow2.appendChild(headerCellInv);
+            thead.appendChild(headerRow2);
+            
+            newTable.appendChild(thead);
+            
+            // Создаем тело таблицы
+            const tbody = document.createElement('tbody');
+            const bodyRow = document.createElement('tr');
+            
+            // Колонка ДИТ
+            const ditCell = document.createElement('td');
+            
+            // Находим индекс спринта в оригинальной таблице
+            const originalTable = document.createElement('div');
+            originalTable.innerHTML = originalHTML;
+            const originalSprintHeaders = originalTable.querySelectorAll('th[colspan="2"]');
+            let sprintIndex = -1;
+            
+            for (let i = 0; i < originalSprintHeaders.length; i++) {
+                if (originalSprintHeaders[i].textContent.trim() === selectedSprint) {
+                    sprintIndex = i;
+                    break;
+                }
+            }
+            
+            if (sprintIndex !== -1) {
+                // Получаем все задачи из оригинальной таблицы для этого спринта
+                const originalTds = originalTable.querySelectorAll('td');
+                const ditCellIndex = sprintIndex * 2;
+                
+                if (ditCellIndex < originalTds.length) {
+                    // Копируем содержимое колонки ДИТ
+                    ditCell.innerHTML = originalTds[ditCellIndex].innerHTML;
+                }
+            }
+            
+            bodyRow.appendChild(ditCell);
+            
+            // Колонка Invaders
+            const invCell = document.createElement('td');
+            
+            if (sprintIndex !== -1) {
+                const originalTds = originalTable.querySelectorAll('td');
+                const invCellIndex = sprintIndex * 2 + 1;
+                
+                if (invCellIndex < originalTds.length) {
+                    // Копируем содержимое колонки Invaders
+                    invCell.innerHTML = originalTds[invCellIndex].innerHTML;
+                }
+            }
+            
+            bodyRow.appendChild(invCell);
+            tbody.appendChild(bodyRow);
+            newTable.appendChild(tbody);
+            
+            // Заменяем таблицу
+            tableContainer.innerHTML = '';
+            tableContainer.appendChild(newTable);
+        });
         
         // Применяем текущий фильтр по задаче, если он есть
         const filterInput = document.getElementById('taskFilter');
@@ -835,9 +953,8 @@ def generate_html(categorized, out_file: Path, mos_df, inv_df):
         sprintSelect.value = '';
         currentFilteredSprint = '';
         
-        // Восстанавливаем оригинальную таблицу
-        const tableContainer = document.querySelector('.table-container');
-        tableContainer.innerHTML = originalTableHTML;
+        // Восстанавливаем оригинальные таблицы
+        showAll();
         
         // Применяем текущий фильтр по задаче, если он есть
         const filterInput = document.getElementById('taskFilter');
@@ -885,6 +1002,8 @@ def generate_html(categorized, out_file: Path, mos_df, inv_df):
     html_parts.append(css)
     html_parts.append("</head><body><div class='container'><h1>Сравнение ДИТ ↔ Invaders</h1>")
     html_parts.append("<div class='controls'>")
+    html_parts.append("<button class='btn' onclick='expandAllSwimlanes()'>Развернуть все</button>")
+    html_parts.append("<button class='btn' onclick='collapseAllSwimlanes()'>Свернуть все</button>")
     html_parts.append("<button class='btn' onclick='showAll()'>Показать всё</button>")
     html_parts.append("<button class='btn' onclick='hideAll()'>Скрыть всё</button>")
     html_parts.append("<button class='btn' onclick=\"toggleClass('match')\">Toggle совпадения</button>")
@@ -926,16 +1045,25 @@ def generate_html(categorized, out_file: Path, mos_df, inv_df):
     html_parts.append(f"• Отчет содержит {len(categorized['match'])} совпадений, {len(categorized['diff_sprint'])} задач с разными спринтами<br>")
     html_parts.append(f"• Только в ДИТ: {len(categorized['mos_only'])} задач<br>")
     html_parts.append(f"• Только в Invaders: {len(categorized['inv_only'])} задач<br>")
+    html_parts.append(f"• Задачи: {total_regular}, Баги: {total_bugs}<br>")
     html_parts.append("• Нажмите кнопку 'Скачать Excel отчет' для выгрузки полных данных")
     html_parts.append("</div>")
     html_parts.append("</div>")
     
-    html_parts.append("<div class='legend'><b>Легенда:</b> <span style='background:#e6f6ea;padding:4px 8px;border-radius:4px;margin-left:8px'>совпадение (зелёный)</span> <span style='background:#fff8e0;padding:4px 8px;border-radius:4px;margin-left:8px'>разные спринты (жёлтый)</span> <span style='background:#ffe9e9;padding:4px 8px;border-radius:4px;margin-left:8px'>только ДИТ (красный)</span> <span style='background:#e8f1ff;padding:4px 8px;border-radius:4px;margin-left:8px'>только Invaders (синий)</span></div>")
+    html_parts.append("<div class='legend'><b>Легенда:</b> <span style='background:#e6f6ea;padding:4px 8px;border-radius:4px;margin-left:8px'>совпадение (зелёный)</span> <span style='background:#fff8e0;padding:4px 8px;border-radius:4px;margin-left:8px'>разные спринты (жёлтый)</span> <span style='background:#ffe9e9;padding:4px 8px;border-radius:4px;margin-left:8px'>только ДИТ (красный)</span> <span style='background:#e8f1ff;padding:4px 8px;border-radius:4px;margin-left:8px'>только Invaders (синий)</span> <span class='bug-indicator'>Баг</span></div>")
 
-    # Контейнер для таблицы
+    # Свимлайн для обычных задач
+    html_parts.append(f"<div id='tasks-swinlane' class='swimlane'>")
+    html_parts.append(f"<div class='swimlane-header' onclick='toggleSwimlane(\"tasks-swinlane\")'>")
+    html_parts.append(f"<span class='swimlane-title'>Задачи ({total_regular})</span>")
+    html_parts.append(f"<span class='swimlane-count'>+</span>")
+    html_parts.append(f"</div>")
+    html_parts.append(f"<div class='swimlane-content'>")
+    
+    # Контейнер для таблицы с задачами
     html_parts.append("<div class='table-container'>")
     
-    # Создаем оригинальную таблицу
+    # Создаем оригинальную таблицу для задач
     html_parts.append("<table><thead><tr>")
     for sp in sorted_sprints:
         html_parts.append(f"<th colspan='2'>{html.escape(sp)}</th>")
@@ -944,20 +1072,20 @@ def generate_html(categorized, out_file: Path, mos_df, inv_df):
         html_parts.append("<th class='col-head'>ДИТ</th><th class='col-head'>Invaders</th>")
     html_parts.append("</tr></thead><tbody><tr>")
 
-    # Body: For each sprint, render DIT column and Invaders column
+    # Body: For each sprint, render DIT column and Invaders column для НЕ-багов
     for sp in sorted_sprints:
-        # DIT column
+        # DIT column для задач (не багов)
         html_parts.append("<td>")
-        # matches where both sprints equal this sp
+        # matches where both sprints equal this sp и НЕ баг
         for it in categorized['match']:
-            if it.get('mos_sprint') == sp and it.get('inv_sprint') == sp:
+            if it.get('mos_sprint') == sp and it.get('inv_sprint') == sp and not it.get('is_bug', False):
                 html_parts.append("<div class='task match'>")
                 html_parts.append(f"<div class='id'>{html.escape(str(it.get('mos_id') or ''))}</div>")
                 html_parts.append(f"<div class='title'><a href='{it.get('mos_url', '#')}' target='_blank'>{html.escape(str(it.get('mos_title') or it.get('inv_title') or ''))}</a></div>")
                 html_parts.append("</div>")
-        # diff_sprint where mos_sprint == sp
+        # diff_sprint where mos_sprint == sp и НЕ баг
         for it in categorized['diff_sprint']:
-            if it.get('mos_sprint') == sp:
+            if it.get('mos_sprint') == sp and not it.get('is_bug', False):
                 html_parts.append("<div class='task diff'>")
                 html_parts.append(f"<div class='id'>{html.escape(str(it.get('mos_id') or it.get('inv_id') or ''))}</div>")
                 if it.get('mos_url') != '#':
@@ -965,9 +1093,9 @@ def generate_html(categorized, out_file: Path, mos_df, inv_df):
                 else:
                     html_parts.append(f"<div class='title'>MOS: {html.escape(str(it.get('mos_title') or ''))}<br/>INV: {html.escape(str(it.get('inv_title') or ''))}</div>")
                 html_parts.append("</div>")
-        # mos_only
+        # mos_only и НЕ баг
         for it in categorized['mos_only']:
-            if it.get('mos_sprint') == sp:
+            if it.get('mos_sprint') == sp and not it.get('is_bug', False):
                 html_parts.append("<div class='task mos-only'>")
                 html_parts.append(f"<div class='id'>{html.escape(str(it.get('mos_id') or ''))}</div>")
                 if it.get('mos_url') != '#':
@@ -977,16 +1105,16 @@ def generate_html(categorized, out_file: Path, mos_df, inv_df):
                 html_parts.append("</div>")
         html_parts.append("</td>")
 
-        # Invaders column
+        # Invaders column для задач (не багов)
         html_parts.append("<td>")
         for it in categorized['match']:
-            if it.get('inv_sprint') == sp and it.get('mos_sprint') == sp:
+            if it.get('inv_sprint') == sp and it.get('mos_sprint') == sp and not it.get('is_bug', False):
                 html_parts.append("<div class='task match'>")
                 html_parts.append(f"<div class='id'>{html.escape(str(it.get('inv_id') or ''))}</div>")
                 html_parts.append(f"<div class='title'><a href='{it.get('inv_url', '#')}' target='_blank'>{html.escape(str(it.get('inv_title') or it.get('mos_title') or ''))}</a></div>")
                 html_parts.append("</div>")
         for it in categorized['diff_sprint']:
-            if it.get('inv_sprint') == sp:
+            if it.get('inv_sprint') == sp and not it.get('is_bug', False):
                 html_parts.append("<div class='task diff'>")
                 html_parts.append(f"<div class='id'>{html.escape(str(it.get('inv_id') or it.get('mos_id') or ''))}</div>")
                 if it.get('inv_url') != '#':
@@ -995,7 +1123,7 @@ def generate_html(categorized, out_file: Path, mos_df, inv_df):
                     html_parts.append(f"<div class='title'>INV: {html.escape(str(it.get('inv_title') or ''))}<br/>MOS: {html.escape(str(it.get('mos_title') or ''))}</div>")
                 html_parts.append("</div>")
         for it in categorized['inv_only']:
-            if it.get('inv_sprint') == sp:
+            if it.get('inv_sprint') == sp and not it.get('is_bug', False):
                 html_parts.append("<div class='task inv-only'>")
                 html_parts.append(f"<div class='id'>{html.escape(str(it.get('inv_id') or ''))}</div>")
                 if it.get('inv_url') != '#':
@@ -1007,6 +1135,94 @@ def generate_html(categorized, out_file: Path, mos_df, inv_df):
 
     html_parts.append("</tr></tbody></table>")
     html_parts.append("</div>")  # Закрываем table-container
+    html_parts.append("</div>")  # Закрываем swimlane-content
+    html_parts.append("</div>")  # Закрываем swimlane
+
+    # Свимлайн для багов
+    html_parts.append(f"<div id='bugs-swinlane' class='swimlane'>")
+    html_parts.append(f"<div class='swimlane-header' onclick='toggleSwimlane(\"bugs-swinlane\")'>")
+    html_parts.append(f"<span class='swimlane-title'>Баги ({total_bugs}) <span class='bug-indicator'>БАГ</span></span>")
+    html_parts.append(f"<span class='swimlane-count'>+</span>")
+    html_parts.append(f"</div>")
+    html_parts.append(f"<div class='swimlane-content'>")
+    
+    # Контейнер для таблицы с багами
+    html_parts.append("<div class='table-container'>")
+    
+    # Создаем оригинальную таблицу для багов
+    html_parts.append("<table><thead><tr>")
+    for sp in sorted_sprints:
+        html_parts.append(f"<th colspan='2'>{html.escape(sp)}</th>")
+    html_parts.append("</tr><tr>")
+    for _ in sorted_sprints:
+        html_parts.append("<th class='col-head'>ДИТ</th><th class='col-head'>Invaders</th>")
+    html_parts.append("</tr></thead><tbody><tr>")
+
+    # Body: For each sprint, render DIT column and Invaders column для багов
+    for sp in sorted_sprints:
+        # DIT column для багов
+        html_parts.append("<td>")
+        # matches where both sprints equal this sp и баг
+        for it in categorized['match']:
+            if it.get('mos_sprint') == sp and it.get('inv_sprint') == sp and it.get('is_bug', False):
+                html_parts.append("<div class='task match bug-task'>")
+                html_parts.append(f"<div class='id'>{html.escape(str(it.get('mos_id') or ''))} <span class='bug-indicator'>БАГ</span></div>")
+                html_parts.append(f"<div class='title'><a href='{it.get('mos_url', '#')}' target='_blank'>{html.escape(str(it.get('mos_title') or it.get('inv_title') or ''))}</a></div>")
+                html_parts.append("</div>")
+        # diff_sprint where mos_sprint == sp и баг
+        for it in categorized['diff_sprint']:
+            if it.get('mos_sprint') == sp and it.get('is_bug', False):
+                html_parts.append("<div class='task diff bug-task'>")
+                html_parts.append(f"<div class='id'>{html.escape(str(it.get('mos_id') or it.get('inv_id') or ''))} <span class='bug-indicator'>БАГ</span></div>")
+                if it.get('mos_url') != '#':
+                    html_parts.append(f"<div class='title'>MOS: <a href='{it.get('mos_url')}' target='_blank'>{html.escape(str(it.get('mos_title') or ''))}</a><br/>INV: <a href='{it.get('inv_url')}' target='_blank'>{html.escape(str(it.get('inv_title') or ''))}</a></div>")
+                else:
+                    html_parts.append(f"<div class='title'>MOS: {html.escape(str(it.get('mos_title') or ''))}<br/>INV: {html.escape(str(it.get('inv_title') or ''))}</div>")
+                html_parts.append("</div>")
+        # mos_only и баг
+        for it in categorized['mos_only']:
+            if it.get('mos_sprint') == sp and it.get('is_bug', False):
+                html_parts.append("<div class='task mos-only bug-task'>")
+                html_parts.append(f"<div class='id'>{html.escape(str(it.get('mos_id') or ''))} <span class='bug-indicator'>БАГ</span></div>")
+                if it.get('mos_url') != '#':
+                    html_parts.append(f"<div class='title'><a href='{it.get('mos_url')}' target='_blank'>{html.escape(str(it.get('mos_title') or ''))}</a></div>")
+                else:
+                    html_parts.append(f"<div class='title'>{html.escape(str(it.get('mos_title') or ''))}</div>")
+                html_parts.append("</div>")
+        html_parts.append("</td>")
+
+        # Invaders column для багов
+        html_parts.append("<td>")
+        for it in categorized['match']:
+            if it.get('inv_sprint') == sp and it.get('mos_sprint') == sp and it.get('is_bug', False):
+                html_parts.append("<div class='task match bug-task'>")
+                html_parts.append(f"<div class='id'>{html.escape(str(it.get('inv_id') or ''))} <span class='bug-indicator'>БАГ</span></div>")
+                html_parts.append(f"<div class='title'><a href='{it.get('inv_url', '#')}' target='_blank'>{html.escape(str(it.get('inv_title') or it.get('mos_title') or ''))}</a></div>")
+                html_parts.append("</div>")
+        for it in categorized['diff_sprint']:
+            if it.get('inv_sprint') == sp and it.get('is_bug', False):
+                html_parts.append("<div class='task diff bug-task'>")
+                html_parts.append(f"<div class='id'>{html.escape(str(it.get('inv_id') or it.get('mos_id') or ''))} <span class='bug-indicator'>БАГ</span></div>")
+                if it.get('inv_url') != '#':
+                    html_parts.append(f"<div class='title'>INV: <a href='{it.get('inv_url')}' target='_blank'>{html.escape(str(it.get('inv_title') or ''))}</a><br/>MOS: <a href='{it.get('mos_url')}' target='_blank'>{html.escape(str(it.get('mos_title') or ''))}</a></div>")
+                else:
+                    html_parts.append(f"<div class='title'>INV: {html.escape(str(it.get('inv_title') or ''))}<br/>MOS: {html.escape(str(it.get('mos_title') or ''))}</div>")
+                html_parts.append("</div>")
+        for it in categorized['inv_only']:
+            if it.get('inv_sprint') == sp and it.get('is_bug', False):
+                html_parts.append("<div class='task inv-only bug-task'>")
+                html_parts.append(f"<div class='id'>{html.escape(str(it.get('inv_id') or ''))} <span class='bug-indicator'>БАГ</span></div>")
+                if it.get('inv_url') != '#':
+                    html_parts.append(f"<div class='title'><a href='{it.get('inv_url')}' target='_blank'>{html.escape(str(it.get('inv_title') or ''))}</a></div>")
+                else:
+                    html_parts.append(f"<div class='title'>{html.escape(str(it.get('inv_title') or ''))}</div>")
+                html_parts.append("</div>")
+        html_parts.append("</td>")
+
+    html_parts.append("</tr></tbody></table>")
+    html_parts.append("</div>")  # Закрываем table-container
+    html_parts.append("</div>")  # Закрываем swimlane-content
+    html_parts.append("</div>")  # Закрываем swimlane
     
     html_parts.append(js)
     html_parts.append("</div></body></html>")
